@@ -7,7 +7,7 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 # Get API key from environment variable (Render/locally set OPENAI_API_KEY)
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 client = OpenAI(api_key=OPENAI_API_KEY)
 
 
