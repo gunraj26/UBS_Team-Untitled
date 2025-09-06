@@ -9,7 +9,6 @@ import routes.blankety
 import routes.duolingo
 import routes.fog_of_wall
 import routes.micro_mouse
-import routes.operation_safegaurd
 import routes.chasetheflag
 
 # --- import blueprints ---
