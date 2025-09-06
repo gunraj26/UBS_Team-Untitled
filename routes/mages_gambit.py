@@ -1,5 +1,9 @@
 from flask import Blueprint, request, jsonify
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 mages_gambit = Blueprint('mages_gambit', __name__)
 
 def solve_mages_gambit(intel, reserve, fronts, stamina):
@@ -68,6 +72,8 @@ def the_mages_gambit():
     try:
         # Get JSON data from request
         data = request.get_json()
+
+        logger.info(data)
         
         if not isinstance(data, list):
             return jsonify({"error": "Input must be a list of scenarios"}), 400
