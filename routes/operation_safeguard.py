@@ -1174,17 +1174,6 @@ Example response:
     return jsonify(response)
 
 
-@app.errorhandler(Exception)
-def handle_unexpected_error(e):
-    """Handle unexpected errors gracefully"""
-    logger.error("Unexpected error in operation-safeguard: %s", e, exc_info=True)
-    return jsonify({
-        "error": "Internal server error",
-        "message": "An unexpected error occurred while processing the request",
-        "details": str(e) if app.debug else "Contact support for assistance"
-    }), 500
-
-
 if __name__ == "__main__":
     # Only run the app if this file is executed directly
     app.run(debug=True, port=5000)
