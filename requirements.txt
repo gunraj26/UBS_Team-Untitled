@@ -11,5 +11,7 @@ Werkzeug==2.3.7
 openai
 numpy
 requests
+scipy
+
 
 
