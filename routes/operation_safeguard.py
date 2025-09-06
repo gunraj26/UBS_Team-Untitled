@@ -1002,31 +1002,15 @@ Respond with ONLY the decrypted text, no explanations.
         # If enhanced analysis finds a clear result, extract just the parameter
         if enhanced_result and "error" not in enhanced_result:
             param = enhanced_result.get("parameter")
-            if isinstance(param, (int, float)):
-                challenge_two_out = param
-            elif isinstance(param, str):
-                # Try to convert string to number if it's a digit
-                try:
-                    challenge_two_out = int(param)
-                except ValueError:
-                    # If it's not a number, return the string as is
-                    challenge_two_out = param
-            else:
-                challenge_two_out = param
+            # Always convert to string as required by API
+            challenge_two_out = str(param)
         else:
             # Fallback to traditional analysis
             traditional_result = analyze_coordinates_traditional(coords)
             if traditional_result and "error" not in traditional_result:
                 param = traditional_result.get("parameter")
-                if isinstance(param, (int, float)):
-                    challenge_two_out = param
-                elif isinstance(param, str):
-                    try:
-                        challenge_two_out = int(param)
-                    except ValueError:
-                        challenge_two_out = param
-                else:
-                    challenge_two_out = param
+                # Always convert to string as required by API
+                challenge_two_out = str(param)
             else:
                 # Final fallback to AI analysis
                 coords_text = "\n".join(str(c) for c in coords)
@@ -1078,14 +1062,8 @@ Example response:
                     if resp.status_code == 200:
                         content = resp.json()["choices"][0]["message"]["content"].strip()
                         logger.info("Challenge 2 OpenAI response: %s", content)
-                        # Try to convert to number if possible
-                        try:
-                            challenge_two_out = int(content)
-                        except ValueError:
-                            try:
-                                challenge_two_out = float(content)
-                            except ValueError:
-                                challenge_two_out = content
+                        # Keep as string as required by API
+                        challenge_two_out = str(content)
                     else:
                         logger.error("OpenAI API error: %s", resp.text)
                         challenge_two_out = "AI analysis failed"
@@ -1448,12 +1426,18 @@ MISSION COMPLETE
     else:
         challenge_four_out = "Unable to combine previous challenge results"
 
+    # Ensure all challenge outputs are strings as required by API
+    challenge_one_str = str(challenge_one_out) if challenge_one_out is not None else "No result"
+    challenge_two_str = str(challenge_two_out) if challenge_two_out is not None else "No result"
+    challenge_three_str = str(challenge_three_out) if challenge_three_out is not None else "No result"
+    challenge_four_str = str(challenge_four_out) if challenge_four_out is not None else "No result"
+    
     # Prepare response
     response = {
-        "challenge_one": challenge_one_out,
-        "challenge_two": challenge_two_out,
-        "challenge_three": challenge_three_out,
-        "challenge_four": challenge_four_out
+        "challenge_one": challenge_one_str,
+        "challenge_two": challenge_two_str,
+        "challenge_three": challenge_three_str,
+        "challenge_four": challenge_four_str
     }
     
     # Log the response for debugging
