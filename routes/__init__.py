@@ -13,6 +13,8 @@ import routes.mstCalc
 import routes.duolingo
 import routes.trading_formula
 import routes.trading_bot
+import routes.sailing_club
+
 
 # --- import blueprints ---
 # from .trading_formula import trading_formula_bp
