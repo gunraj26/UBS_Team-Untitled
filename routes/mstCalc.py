@@ -24,7 +24,7 @@ logger = logging.getLogger("mst-openai")
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 
 client = OpenAI(api_key=OPENAI_API_KEY)
-app = Flask(__name__)
+
 
 # --- Kruskal MST ---
 def kruskal_mst(num_nodes: int, edges: List[Tuple[int, int, int]]) -> int:
@@ -151,6 +151,4 @@ def mst_calculation():
 
     return jsonify(results)
 
-if __name__ == "__main__":
-    # Run the standalone server
-    app.run(host="0.0.0.0", port=8080, debug=True)
+
