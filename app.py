@@ -2,6 +2,8 @@ import logging
 import socket
 
 from routes import app
+import square
+import ticketing_agent
 
 logger = logging.getLogger(__name__)
 
