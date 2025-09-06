@@ -139,7 +139,7 @@ def mst_calculation():
 
         # ✅ Log the raw base64 string
         logger.info(f"Case {idx}: received base64 image (length={len(img_b64)})")
-        logger.debug(f"Case {idx}: base64 string = {img_b64}")
+        logger.info(f"Case {idx}: base64 string = {img_b64}")
 
         try:
             parsed = call_openai_extract(img_b64)
