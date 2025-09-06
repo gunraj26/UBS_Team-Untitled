@@ -19,3 +19,6 @@ import routes.trading_bot
 
 from routes.ink_archive import bp as ink_archive_bp
 app.register_blueprint(ink_archive_bp)
+
+from routes.slpu import slpu
+app.register_blueprint(slpu)
