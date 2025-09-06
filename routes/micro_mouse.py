@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import request, jsonify
 from typing import List, Optional, Dict, Any
 import uuid
 
@@ -59,8 +59,40 @@ class MicromouseController:
         """
         return False
 
-# Global controller instance - replace with your implementation
-controller = None
+# Example controller implementation
+class ExampleController(MicromouseController):
+    """Example micromouse controller - replace with your own logic."""
+    
+    def get_instructions(self, sensor_data: List[int], game_state: Dict[str, Any]) -> List[str]:
+        """
+        Simple example: move forward if no obstacle ahead, otherwise turn right.
+        Replace this with your own maze-solving algorithm.
+        """
+        # sensor_data[2] is the front sensor (0° direction)
+        if sensor_data[2] == 0:  # No wall ahead
+            return ['F1']  # Move forward at constant speed
+        else:  # Wall ahead
+            return ['R']  # Turn right
+    
+    def should_end(self, game_state: Dict[str, Any]) -> bool:
+        """End if we've reached the goal or used too much time."""
+        # End if we've used more than 250 seconds (leaving buffer)
+        if game_state['total_time_ms'] > 250000:
+            return True
+        
+        # End if we've reached the goal and have a good time
+        if game_state['goal_reached'] and game_state['best_time_ms'] is not None:
+            return True
+        
+        return False
+
+# Initialize the controller immediately
+controller = ExampleController()
+
+def set_controller(new_controller: MicromouseController):
+    """Set the micromouse controller implementation."""
+    global controller
+    controller = new_controller
 
 def validate_request_body(data: Dict[str, Any]) -> tuple[bool, str]:
     """Validate the incoming request body according to API specification."""
@@ -223,36 +255,24 @@ def micro_mouse():
         })
         
     except Exception as e:
+        # More detailed error logging
+        import traceback
+        error_details = traceback.format_exc()
+        print(f"Error in micro_mouse endpoint: {error_details}")
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
 
-def set_controller(new_controller: MicromouseController):
-    """Set the micromouse controller implementation."""
-    global controller
-    controller = new_controller
+# Health check endpoint for debugging
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint to verify the API is working."""
+    return jsonify({
+        'status': 'OK',
+        'service': 'Micromouse API',
+        'controller_initialized': controller is not None,
+        'controller_type': type(controller).__name__ if controller else None
+    })
 
-# Example controller implementation
-class ExampleController(MicromouseController):
-    """Example micromouse controller - replace with your own logic."""
-    
-    def get_instructions(self, sensor_data: List[int], game_state: Dict[str, Any]) -> List[str]:
-        """
-        Simple example: move forward if no obstacle ahead, otherwise turn right.
-        Replace this with your own maze-solving algorithm.
-        """
-        # sensor_data[2] is the front sensor (0° direction)
-        if sensor_data[2] == 0:  # No wall ahead
-            return ['F1']  # Move forward at constant speed
-        else:  # Wall ahead
-            return ['R']  # Turn right
-    
-    def should_end(self, game_state: Dict[str, Any]) -> bool:
-        """End if we've reached the goal or used too much time."""
-        # End if we've used more than 250 seconds (leaving buffer)
-        if game_state['total_time_ms'] > 250000:
-            return True
-        
-        # End if we've reached the goal and have a good time
-        if game_state['goal_reached'] and game_state['best_time_ms'] is not None:
-            return True
-        
-        return False
+print("Micromouse API initialized with ExampleController")
+print("Available endpoints:")
+print("  GET /health - Health check and status")
+print("  POST /micro-mouse - Main micromouse endpoint")
