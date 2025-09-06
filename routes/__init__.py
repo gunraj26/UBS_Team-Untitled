@@ -2,18 +2,8 @@ from flask import Flask
 
 app = Flask(__name__)
 import routes.square
-import routes.ticketing_agent
-import routes.operation_safeguard
-import routes.investigate
-import routes.blankety
-import routes.princess
-import routes.fog_of_wall
-import routes.trading_formula
-import routes.mstCalc
-import routes.duolingo
 import routes.trading_formula
 import routes.trading_bot
-import routes.sailing_club
 
 
 # --- import blueprints ---
@@ -21,7 +11,6 @@ import routes.sailing_club
 
 # # --- register blueprints ---
 # app.register_blueprint(trading_formula_bp)              
-
 
 
 from routes.ink_archive import bp as ink_archive_bp
