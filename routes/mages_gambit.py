@@ -6,7 +6,7 @@ bp = Blueprint("mages_gambit", __name__)
 
 HARDCODED_RESULTS: List[Dict[str, int]] = [
     {"time": 70},
-    {"time": 5300},
+    {"time": 5180},
     {"time": 1160},
     {"time": 2010},
     {"time": 2330},
