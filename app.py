@@ -19,22 +19,17 @@ app = Flask(__name__)
 @app.get("/trivia")
 def trivia():
     return jsonify({
-        "answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 2]
+        "answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3]
     })
 
-# {
-#     "answers": [
-#         2,
-#         1,
-#         2,
-#         2,
-#         3,
-#         4,
-#         2,
-#         5,
-#         4
-#     ]
-# }
+@app.get("/micro-mouse")
+def trivia():
+    return jsonify(
+        {
+  "instructions": ["F2", "F2", "BB"],
+  "end": False
+})
+
 
 
 logger = logging.getLogger()
