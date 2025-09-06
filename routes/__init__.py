@@ -12,15 +12,11 @@ import routes.trading_formula
 import routes.mstCalc
 
 # --- import blueprints ---
-from .trading_formula import trading_formula_bp
-# (if you have these, import them as well)
-# from .square import square_bp
-# from .investigate import investigate_bp
+# from .trading_formula import trading_formula_bp
 
-# --- register blueprints ---
-app.register_blueprint(trading_formula_bp)        # exposes POST /trading-formula        
-# app.register_blueprint(square_bp)
-# app.register_blueprint(investigate_bp)
+# # --- register blueprints ---
+# app.register_blueprint(trading_formula_bp)              
+
 
 
 from routes.ink_archive import bp as ink_archive_bp
