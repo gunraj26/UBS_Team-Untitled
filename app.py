@@ -19,7 +19,7 @@ app = Flask(__name__)
 @app.get("/trivia")
 def trivia():
     return jsonify({
-        "answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 1]
+        "answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]
     })
 
 @app.post("/micro-mouse")
