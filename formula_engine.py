@@ -1,375 +1,244 @@
-"""
-formula_engine
-================
-
-This module provides functionality for translating LaTeX-formatted
-financial formulas into executable Python expressions and evaluating
-them with supplied variable values.  It is designed to support the
-subset of LaTeX commonly encountered in quantitative finance: basic
-arithmetic, fractions, exponents, maximum/minimum, logarithms,
-exponentials, square roots, summations, textual variables and
-subscripts.  Unsupported constructs are left unchanged and may
-produce evaluation errors.
-
-The main entry point is :func:`evaluate_formula`, which accepts a
-LaTeX string (possibly with a leading assignment) and a mapping of
-variables to numeric values.  The helper :func:`latex_to_python`
-performs a series of regex-driven substitutions to convert LaTeX
-syntax into Python syntax.  Fractions and summations require more
-involved parsing and are handled by :func:`parse_frac` and
-:func:`parse_sum` respectively.  Implicit multiplication is
-inserted when adjacency suggests multiplication but no operator is
-present.
-
-These functions are entirely independent of Flask and can be used
-directly in a non-web context.  The companion ``app.py`` file
-exposes a Flask REST API that wraps :func:`evaluate_formula`.
-"""
-
-from __future__ import annotations
-
+# routes/formula_engine.py
 import math
 import re
-from typing import Dict, List
+from typing import Dict, Any
 
-__all__ = [
-    'evaluate_formula',
-    'latex_to_python',
-    'parse_frac',
-    'parse_sum',
-    'find_matching_brace',
-    'insert_implicit_multiplication',
-]
+def strip_latex_delimiters(formula: str) -> str:
+    formula = formula.strip()
+    if formula.startswith("$$") and formula.endswith("$$"):
+        formula = formula[2:-2]
+    if formula.startswith("$") and formula.endswith("$"):
+        formula = formula[1:-1]
+    for delim_start, delim_end in [("\\[", "\\]"), ("\\(", "\\)")]:
+        if formula.startswith(delim_start) and formula.endswith(delim_end):
+            formula = formula[len(delim_start):-len(delim_end)]
+    return formula
 
-
-def find_matching_brace(s: str, start: int) -> int:
-    """Return the index of the matching closing brace/parenthesis."""
-    if start < 0 or start >= len(s):
-        return -1
-    open_char = s[start]
-    if open_char not in '({[':
-        return -1
-    close_char = {'(': ')', '{': '}', '[': ']'}[open_char]
+def remove_assignment(s: str) -> str:
     depth = 0
-    for i in range(start, len(s)):
-        ch = s[i]
-        if ch == open_char:
+    for i, c in enumerate(s):
+        if c in "{(":
             depth += 1
-        elif ch == close_char:
+        elif c in "})":
             depth -= 1
-            if depth == 0:
-                return i
-    return -1
+        elif c == "=" and depth == 0:
+            return s[i + 1:].strip()
+    return s.strip()
 
-
-def parse_frac(expr: str) -> str:
-    """Replace all LaTeX ``\frac{a}{b}`` constructs with ``((a)/(b))``."""
-    while '\\frac' in expr:
-        idx = expr.find('\\frac')
-        if idx == -1:
-            break
-        pos = idx + len('\\frac')
-        while pos < len(expr) and expr[pos].isspace():
-            pos += 1
-        if pos >= len(expr) or expr[pos] != '{':
-            break
-        start_num = pos
-        end_num = find_matching_brace(expr, start_num)
-        if end_num == -1:
-            break
-        numerator = expr[start_num + 1:end_num]
-        pos = end_num + 1
-        while pos < len(expr) and expr[pos].isspace():
-            pos += 1
-        if pos >= len(expr) or expr[pos] != '{':
-            break
-        start_den = pos
-        end_den = find_matching_brace(expr, start_den)
-        if end_den == -1:
-            break
-        denominator = expr[start_den + 1:end_den]
-        replacement = f'(({numerator})/({denominator}))'
-        expr = expr[:idx] + replacement + expr[end_den + 1:]
-    return expr
-
-
-def parse_sum(expr: str) -> str:
-    """Convert LaTeX summations into Python ``sum`` constructs."""
+def replace_frac(s: str) -> str:
+    pattern = re.compile(r"\\frac{")
     while True:
-        idx = expr.find('\\sum_')
+        match = pattern.search(s)
+        if not match:
+            break
+        start = match.start()
+        i = match.end()
+        brace_count = 1
+        while i < len(s) and brace_count > 0:
+            brace_count += 1 if s[i] == "{" else -1 if s[i] == "}" else 0
+            i += 1
+        numerator = s[match.end(): i - 1]
+        if i < len(s) and s[i] == "{":
+            i += 1
+        brace_count = 1
+        j = i
+        while j < len(s) and brace_count > 0:
+            brace_count += 1 if s[j] == "{" else -1 if s[j] == "}" else 0
+            j += 1
+        denominator = s[i: j - 1]
+        replacement = f"({numerator})/({denominator})"
+        s = s[:start] + replacement + s[j:]
+    return s
+
+def handle_sum(s: str) -> str:
+    pos = 0
+    while True:
+        idx = s.find("\\sum_", pos)
         if idx == -1:
             break
-        pos = idx + len('\\sum_')
-        if pos < len(expr) and expr[pos] == '(':
-            end_lower = find_matching_brace(expr, pos)
-            if end_lower == -1:
-                break
-            lower_content = expr[pos + 1:end_lower]
-            pos = end_lower + 1
-        else:
-            m = re.match(r'([a-zA-Z]\w*)(?:=([^\^]+))?', expr[pos:])
-            if not m:
-                break
-            var_name = m.group(1)
-            lower_val = m.group(2)
-            if lower_val is not None:
-                lower_content = f'{var_name}={lower_val}'
-            else:
-                lower_content = f'{var_name}=1'
-            pos += m.end()
-        while pos < len(expr) and expr[pos].isspace():
-            pos += 1
-        if pos >= len(expr) or expr[pos] != '^':
-            break
-        pos += 1
-        if pos < len(expr) and expr[pos] == '(':
-            end_upper = find_matching_brace(expr, pos)
-            if end_upper == -1:
-                break
-            upper_content = expr[pos + 1:end_upper]
-            pos = end_upper + 1
-        else:
-            m2 = re.match(r'([a-zA-Z]\w*|\d+(?:\.\d*)?)', expr[pos:])
-            if not m2:
-                break
-            upper_content = m2.group(1)
-            pos += m2.end()
-        while pos < len(expr) and expr[pos].isspace():
-            pos += 1
-        start_summand = pos
+        if s[idx + 5] != "{":
+            raise ValueError("Unexpected \\sum syntax; missing '{' after _")
+        brace_start = idx + 6
+        brace_count = 1
+        k = brace_start
+        while k < len(s) and brace_count > 0:
+            brace_count += 1 if s[k] == "{" else -1 if s[k] == "}" else 0
+            k += 1
+        brace_end = k - 1
+        sub = s[brace_start:brace_end]
+        if "=" not in sub:
+            raise ValueError("Unexpected \\sum syntax; missing '=' in lower limit")
+        var, start_expr = [part.strip() for part in sub.split("=", 1)]
+        if brace_end + 1 >= len(s) or s[brace_end + 1] != "^":
+            raise ValueError("Unexpected \\sum syntax; missing '^'")
+        if s[brace_end + 2] != "{":
+            raise ValueError("Unexpected \\sum syntax; missing '{' for upper limit")
+        upper_start = brace_end + 3
+        brace_count = 1
+        l = upper_start
+        while l < len(s) and brace_count > 0:
+            brace_count += 1 if s[l] == "{" else -1 if s[l] == "}" else 0
+            l += 1
+        upper_end = l - 1
+        end_expr = s[upper_start:upper_end].strip()
+        after_upper = l
+        m = after_upper
+        while m < len(s) and s[m].isspace():
+            m += 1
+        summand_start = m
         depth = 0
-        while pos < len(expr):
-            ch = expr[pos]
-            if ch == '(':
+        n = summand_start
+        while n < len(s):
+            c = s[n]
+            if c in "({[":
                 depth += 1
-            elif ch == ')':
-                if depth > 0:
-                    depth -= 1
-                if depth == 0:
-                    j = pos + 1
-                    while j < len(expr) and expr[j].isspace():
-                        j += 1
-                    if j < len(expr) and expr[j] in '*/':
-                        break
-            if (ch in '+-') and depth == 0 and pos > start_summand:
+            elif c in ")}]":
+                depth -= 1
+            elif depth == 0 and c in "+-" and n != summand_start:
                 break
-            pos += 1
-        summand = expr[start_summand:pos]
-        tmp = summand.lstrip()
-        if tmp.startswith('*'):
-            tmp = tmp.lstrip('*').lstrip()
-        summand = tmp
-        if '=' in lower_content:
-            var, start_val = lower_content.split('=', 1)
-        else:
-            var = lower_content
-            start_val = '1'
+            n += 1
+        summand_end = n
+        summand = s[summand_start:summand_end].strip()
         replacement = (
-            f'(sum(({summand}) for {var} in '
-            f'range(int({start_val}), int({upper_content}) + 1)))'
+            f"sum(( {summand} ) for {var} in range(int({start_expr}), int({end_expr})+1))"
         )
-        expr = expr[:idx] + replacement + expr[pos:]
-    return expr
+        s = s[:idx] + replacement + s[summand_end:]
+        pos = idx + len(replacement)
+    return s
 
+def flatten_subscripts(s: str) -> str:
+    s = re.sub(r"_\{([^{}]+)\}", r"_\1", s)
+    def replace_brackets(match: re.Match) -> str:
+        return match.group(1) + "_" + match.group(2)
+    s = re.sub(r"([A-Za-z0-9_]+)\[([^\]]+)\]", replace_brackets, s)
+    return s
 
-def tokenize_for_multiplication(expr: str) -> List[str]:
-    """Tokenize an expression for implicit multiplication detection."""
-    tokens: List[str] = []
-    i = 0
-    n = len(expr)
-    while i < n:
-        ch = expr[i]
-        if ch.isspace():
-            i += 1
-            continue
-        if ch.isdigit() or (ch == '.' and i + 1 < n and expr[i + 1].isdigit()):
-            j = i + 1
-            while j < n and (expr[j].isdigit() or expr[j] == '.'):
-                j += 1
-            tokens.append(expr[i:j])
-            i = j
-            continue
-        if ch.isalpha() or ch == '_' or ch == '.':
-            j = i + 1
-            while j < n and (expr[j].isalnum() or expr[j] in '._'):
-                j += 1
-            tokens.append(expr[i:j])
-            i = j
-            continue
-        if ch == '*':
-            if i + 1 < n and expr[i + 1] == '*':
-                tokens.append('**')
-                i += 2
-                continue
-            tokens.append('*')
-            i += 1
-            continue
-        if ch in '+-/%,' or ch == ':':
-            tokens.append(ch)
-            i += 1
-            continue
-        if ch in '()[]':
-            tokens.append(ch)
-            i += 1
-            continue
-        tokens.append(ch)
-        i += 1
-    return tokens
+def replace_caret(s: str) -> str:
+    return s.replace("^", "**")
 
+def replace_exp(s: str) -> str:
+    s = re.sub(r"e\^\{([^{}]+)\}", lambda m: f"math.exp({m.group(1)})", s)
+    s = re.sub(r"e\^([A-Za-z0-9_]+)", r"math.exp(\1)", s)
+    return s
 
-def insert_implicit_multiplication(expr: str) -> str:
-    """Insert explicit ``*`` operators where multiplication is implied."""
-    tokens = tokenize_for_multiplication(expr)
-    if not tokens:
-        return expr
-    result: List[str] = []
-    function_tokens = {
-        'max', 'min', 'abs', 'pow', 'int', 'range', 'sum',
-        'math.log', 'math.exp', 'math.sqrt',
-        'math.sin', 'math.cos', 'math.tan', 'math.sinh', 'math.cosh',
-        'math.tanh', 'math.floor', 'math.ceil',
-    }
-    for i, tok in enumerate(tokens):
-        result.append(tok)
-        if i >= len(tokens) - 1:
-            continue
-        left = tok
-        right = tokens[i + 1]
+def replace_functions(s: str) -> str:
+    s = s.replace("\\left", "").replace("\\right", "")
+    s = s.replace("\\,", "")
+    s = s.replace("\\cdot", "*").replace("\\times", "*")
+    s = s.replace("\\max", "max").replace("\\min", "min")
+    s = s.replace("\\log", "math.log").replace("\\ln", "math.log")
+    return s
 
-        def is_value(t: str) -> bool:
-            return bool(t and (t[0].isdigit() or t[0].isalpha() or t[0] in '._'))
-
-        def is_opening(t: str) -> bool:
-            return t in {'(', '['}
-
-        if (is_value(left) or left.endswith(')') or left.endswith(']')) and (is_opening(right) or is_value(right)):
-            if right in {'for', 'in'}:
-                continue
-            if left in {'for', 'in'}:
-                continue
-            if left.startswith('\\') or right.startswith('\\'):
-                continue
-            if left.startswith('sum_') or right.startswith('sum_'):
-                continue
-            if left == ')' and i >= 3 and tokens[i - 3] == '^':
-                continue
-            if right == '(':
-                if left in function_tokens:
-                    continue
-                if left.startswith('math.') and left in function_tokens:
-                    continue
-            if left in {'+', '-', '*', '/', '**', '%', ','}:
-                continue
-            result.append('*')
-    reconstructed: List[str] = []
-    for tok in result:
-        if tok == 'for':
-            reconstructed.append('for ')
-            continue
-        if tok == 'in':
-            if reconstructed and not reconstructed[-1].endswith(' '):
-                reconstructed[-1] = reconstructed[-1] + ' '
-            reconstructed.append('in ')
-            continue
-        reconstructed.append(tok)
-    return ''.join(reconstructed)
-
-
-def latex_to_python(expr: str) -> str:
-    """Transform a LaTeX expression into a Python expression."""
-    expr = expr.replace('$$', '').replace('$', '').strip()
-    stripped = expr.lstrip()
-    if stripped and stripped[0] != '\\' and '=' in expr:
-        expr = expr.split('=', 1)[1]
-    expr = expr.replace('\n', '')
-    expr = expr.replace('\\left', '').replace('\\right', '')
-    expr = expr.replace('\\,', '').replace('\\;', '').replace('\\!', '').replace('\\:', '')
-    expr = re.sub(r'\\text\s*{\s*([^}]*)\s*}', lambda m: m.group(1).strip().replace(' ', ''), expr)
-
-    # Handle expectations E[...] before converting brackets.
-    def _replace_expectation(match: re.Match) -> str:
+def replace_text_commands(s: str) -> str:
+    def repl(match: re.Match) -> str:
         content = match.group(1)
-        inner = content.strip()
-        control_seqs = re.findall(r'\\([a-zA-Z]+)', inner)
-        if (
-            re.search(r'[+\-*/^(), ]', inner)
-            or any(cmd in {'max', 'min', 'log', 'ln', 'exp', 'sqrt', 'frac', 'sum'} for cmd in control_seqs)
-        ):
-            return '(' + inner + ')'
-        flattened = re.sub(r'\{\s*([^{}]*?)\s*\}', lambda m: m.group(1), inner)
-        flattened = flattened.replace(' ', '')
-        return 'E_' + flattened
+        return content.replace(" ", "")
+    s = re.sub(r"\\text\{([^{}]*)\}", repl, s)
+    s = re.sub(r"\\mathrm\{([^{}]*)\}", repl, s)
+    return s
 
-    expr = re.sub(r'E\s*\[([^\]]*)\]', _replace_expectation, expr)
+def replace_greek(s: str) -> str:
+    greek_map = {
+        "\\alpha": "alpha",
+        "\\beta": "beta",
+        "\\gamma": "gamma",
+        "\\delta": "delta",
+        "\\sigma": "sigma",
+    }
+    for k, v in greek_map.items():
+        s = s.replace(k, v)
+    return s
 
-    # Convert remaining square brackets to underscores (indexing).
-    expr = expr.replace('[', '_').replace(']', '')
-
-    def flatten_subscripts(s: str) -> str:
-        result: List[str] = []
-        i = 0
-        n = len(s)
-        while i < n:
-            if s[i] == '_' and i + 1 < n and s[i + 1] == '{':
-                start = i - 4 if i - 4 >= 0 else 0
-                if s[start:i] == '\\sum':
-                    result.append('_')
-                    result.append('{')
-                    i += 2
-                    continue
-                close_idx = find_matching_brace(s, i + 1)
-                if close_idx == -1:
-                    result.append('_')
+def insert_implicit_mul(s: str) -> str:
+    function_names = {"max", "min", "sum", "log", "exp", "range", "int", "float", "abs"}
+    result = []
+    token = ""
+    i = 0
+    length = len(s)
+    while i < length:
+        c = s[i]
+        result.append(c)
+        if c.isalpha() or c == "_" or c.isdigit():
+            token += c
+        elif c == ".":
+            token = ""
+        else:
+            token = ""
+        if c.isdigit() or c.isalpha() or c == "_" or c == ")":
+            j = i + 1
+            has_space = False
+            while j < length and s[j].isspace():
+                has_space = True
+                j += 1
+            if j < length:
+                next_c = s[j]
+                if c.isdigit():
+                    if next_c.isdigit() or next_c == ".":
+                        i += 1
+                        continue
+                if ((c.isalpha() or c == "_" or c.isdigit())
+                    and (next_c.isalpha() or next_c == "_" or next_c.isdigit())
+                    and not has_space):
                     i += 1
                     continue
-                content = s[i + 2:close_idx]
-                result.append('_' + content)
-                i = close_idx + 1
-                continue
-            result.append(s[i])
-            i += 1
-        return ''.join(result)
+                if (next_c == "(" or next_c.isalpha() or next_c == "_" or next_c.isdigit()):
+                    if s[j:j+3] == "for":
+                        pass
+                    elif next_c == "(":
+                        if token.lower() in function_names:
+                            pass
+                        else:
+                            result.append("*")
+                    else:
+                        result.append("*")
+        i += 1
+    return "".join(result)
 
-    expr = flatten_subscripts(expr)
-    expr = parse_frac(expr)
-    expr = expr.replace('\\cdot', '*').replace('\\times', '*')
-    expr = expr.replace('\\max', 'max').replace('\\min', 'min')
-    expr = expr.replace('\\log', 'math.log').replace('\\ln', 'math.log').replace('\\exp', 'math.exp')
-    expr = expr.replace('\\sin', 'math.sin').replace('\\cos', 'math.cos').replace('\\tan', 'math.tan')
-    expr = expr.replace('\\sinh', 'math.sinh').replace('\\cosh', 'math.cosh').replace('\\tanh', 'math.tanh')
-    expr = expr.replace('\\pi', 'math.pi')
-    expr = re.sub(r'\\sqrt\s*{([^}]*)}', lambda m: f'(math.sqrt({m.group(1)}))', expr)
-
-    def strip_backslash(match: re.Match) -> str:
-        cmd = match.group(1)
-        if cmd in {'frac', 'sum', 'cdot', 'times', 'max', 'min', 'log', 'ln', 'exp', 'sqrt', 'left', 'right'}:
+def replace_dynamic_vars(expr: str, variables: Dict[str, Any]) -> str:
+    iterator_vars = set(re.findall(r"for\\s+([A-Za-z_][A-Za-z0-9_]*)\\s+in\\s+range", expr))
+    def repl(match: re.Match) -> str:
+        name = match.group(1)
+        idx = match.group(2)
+        if idx in iterator_vars:
+            return f'variables["{name}_" + str({idx})]'
+        else:
             return match.group(0)
-        return cmd
+    return re.sub(r"([A-Za-z][A-Za-z0-9]*)_([A-Za-z])", repl, expr)
 
-    expr = re.sub(r'\\([a-zA-Z]+)', strip_backslash, expr)
-    expr = expr.replace('{', '(').replace('}', ')')
-    expr = parse_sum(expr)
-    expr = expr.replace('^', '**')
-    expr = insert_implicit_multiplication(expr)
-    return expr
+def preprocess_formula(formula: str) -> str:
+    formula = strip_latex_delimiters(formula)
+    formula = remove_assignment(formula)
+    formula = replace_text_commands(formula)
+    formula = replace_functions(formula)
+    formula = replace_greek(formula)
+    formula = replace_frac(formula)
+    formula = insert_implicit_mul(formula)
+    formula = handle_sum(formula)
+    formula = flatten_subscripts(formula)
+    formula = replace_exp(formula)
+    formula = replace_caret(formula)
+    return formula
 
-
-def evaluate_formula(formula: str, variables: Dict[str, float]) -> float:
-    """Evaluate a LaTeX formula given a variable mapping."""
-    expression = latex_to_python(formula)
-    env: Dict[str, object] = {}
+def evaluate_formula(expr: str, variables: Dict[str, Any]) -> float:
+    expr = replace_dynamic_vars(expr, variables)
+    local_env: Dict[str, Any] = {}
+    local_env["math"] = math
+    local_env["max"] = max
+    local_env["min"] = min
+    local_env["sum"] = sum
+    local_env["range"] = range
+    local_env["int"] = int
+    local_env["float"] = float
+    local_env["str"] = str
+    local_env["abs"] = abs
     for k, v in variables.items():
-        env[k] = v
-    env['math'] = math
-    env['max'] = max
-    env['min'] = min
-    env['sum'] = sum
-    env['range'] = range
-    env['int'] = int
-    env['pow'] = pow
-    env['abs'] = abs
-    env['e'] = math.e
-    safe_globals: Dict[str, object] = {'__builtins__': {}}
-    safe_globals.update(env)
-    result = eval(expression, safe_globals, {})
-    return float(result)
+        if re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", k):
+            local_env[k] = v
+    local_env["variables"] = variables
+    try:
+        global_env = {"__builtins__": {}}
+        global_env.update(local_env)
+        result = eval(expr, global_env, {})
+    except Exception as e:
+        raise ValueError(f"Error evaluating expression '{expr}': {e}")
+    return float(round(result + 1e-10, 4))
