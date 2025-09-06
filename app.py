@@ -22,8 +22,8 @@ def trivia():
         "answers": [3, 1, 2, 2, 3, 4, 4, 5, 4, 3]
     })
 
-@app.get("/micro-mouse")
-def trivia():
+@app.post("/micro-mouse")
+def micro_mouse():
     return jsonify(
         {
   "instructions": ["F2", "F2", "BB"],
