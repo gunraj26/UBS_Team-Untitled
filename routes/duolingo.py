@@ -6,6 +6,7 @@ from flask import request, jsonify
 from routes import app
 from flask import Flask, request, jsonify, abort
 from openai import OpenAI
+from dotenv import load_dotenv
 
 logger = logging.getLogger(__name__)
 
