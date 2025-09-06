@@ -2,6 +2,10 @@ from flask import request, jsonify
 
 from routes import app
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # --- Simple keyword sentiment lexicon (very lightweight) ---
 BULLISH_WORDS = {
     "approval","adopt","partnership","launch","bullish","record",
@@ -121,6 +125,7 @@ def decide_for_event(ev):
 def trading_bot():
     try:
         events = request.get_json(force=True)
+        logger.info(events)
         if not isinstance(events, list):
             return jsonify({"error": "Payload must be a JSON array of events."}), 400
 
