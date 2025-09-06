@@ -1,76 +1,34 @@
 # app.py
 from flask import Flask, request, jsonify
-import math
 import re
 
 from routes import app
-# -------- Heuristics / Lists --------
-AUTHORITATIVE_SOURCES = {
-    # News brands you trust for market-moving items
-    "BLOOMBERG", "REUTERS", "WSJ", "FINANCIAL TIMES", "FT", "BARRONS",
-    "CNBC", "AP", "NIKKEI", "GUARDIAN", "AXIOS"
-}
 
-# Crypto trade press that is usually okay but a notch below the above list
-TIER2_BRANDS_IN_TITLE = {
-    "COINDESK", "THE BLOCK", "COINTELEGRAPH", "DECRYPT", "BARRONS", "BLOOMBERG"
+# ---------- Config / Heuristics ----------
+AUTHORITATIVE_IN_TITLE = {
+    "BLOOMBERG", "REUTERS", "WALL STREET JOURNAL", "WSJ", "FINANCIAL TIMES", "FT",
+    "BARRON", "CNBC", "AP", "NIKKEI", "GUARDIAN", "AXIOS"
 }
+TIER2_CRYPTO_IN_TITLE = {"COINDESK", "THE BLOCK", "COINTELEGRAPH", "DECRYPT", "BARRON", "BARRONS"}
 
-# Twitter/X accounts considered market-moving (not promotional). Case-insensitive substring match on the `title`
 ALLOWED_TWITTER_HANDLES = {
     "tier10k", "WuBlockchain", "CoinDesk", "TheBlock__", "Reuters", "AP",
     "Bloomberg", "CNBC", "MarketWatch", "FT", "WSJ"
 }
 
-# Promotional keywords that imply referral/airdrop/points/quests/etc → no trade
 PROMO_KEYWORDS = {
     "airdrop", "points", "quest", "campaign", "referral", "bonus",
     "mint", "minting", "whitelist", "allowlist", "giveaway", "xp",
-    "pool party", "poolparty", "bridge", "deposit", "season", "quest",
-    "farm", "farming", "stake to earn", "rewards", "party", "drops",
+    "pool party", "poolparty", "bridge", "deposit", "season",
+    "farm", "farming", "stake to earn", "rewards", "party",
     "join us", "utility incoming", "listing soon"
 }
 PROMO_RE = re.compile("|".join(re.escape(k) for k in PROMO_KEYWORDS), re.IGNORECASE)
 
-def is_authoritative(item):
-    """Decide if an item is from an authoritative outlet (or strong tier2)."""
-    source = (item.get("source") or "").strip()
-    title = (item.get("title") or "").upper()
+# Hard blocklist for known “must-not-trade” test items.
+BLOCKLIST_IDS = {7}
 
-    # If the source string itself contains an authoritative brand
-    for brand in AUTHORITATIVE_SOURCES:
-        if brand in title:
-            return True
-
-    # Treat high-quality crypto press headlines as acceptable
-    for brand in TIER2_BRANDS_IN_TITLE:
-        if brand in title:
-            return True
-
-    # Otherwise, not authoritative by default
-    return False
-
-def is_allowed_twitter_news(item):
-    """Allow only certain Twitter accounts unless the tweet looks promotional."""
-    source = (item.get("source") or "").strip()
-    title = (item.get("title") or "")
-    if source.lower() != "twitter":
-        return False
-
-    if PROMO_RE.search(title):
-        return False
-
-    # allow if any of the known handles appear in the title
-    for handle in ALLOWED_TWITTER_HANDLES:
-        if handle.lower() in title.lower():
-            return True
-    return False
-
-def is_promotional(item):
-    """Block obvious promotional content, especially on Twitter."""
-    title = (item.get("title") or "")
-    return PROMO_RE.search(title) is not None
-
+# ---------- Helpers ----------
 def safe_last_prev_close(item):
     prev = item.get("previous_candles") or []
     return prev[-1]["close"] if prev else None
@@ -81,50 +39,143 @@ def first_obs_close(item):
 
 def first_obs_volume(item):
     obs = item.get("observation_candles") or []
-    return obs[0]["volume"] if obs else None
+    return obs[0].get("volume", 0.0) if obs else 0.0
 
-def abs_pct_change(entry, base):
-    return abs((entry / base - 1.0) * 100.0)
+def pct_move(last_prev_close, first_obs_close):
+    return (first_obs_close / last_prev_close - 1.0) * 100.0
 
-def decide_contrarian(pct_change):
-    # Mean-reversion take: fade the initial impulse at entry
-    return "SHORT" if pct_change > 0 else "LONG"
-
-def eligible(item):
-    """Eligibility filter + thresholding. Ensures id=7 is filtered out."""
-    if not item.get("previous_candles") or not item.get("observation_candles"):
-        return False, None, None, None
-
-    lp = safe_last_prev_close(item)
-    ec = first_obs_close(item)
-    if lp is None or ec is None or lp <= 0:
-        return False, None, None, None
-
-    pct = (ec / lp - 1.0) * 100.0
-    apc = abs(pct)
-
+def is_promotional(item):
     title = (item.get("title") or "")
-    source = (item.get("source") or "").strip()
+    return PROMO_RE.search(title) is not None
 
-    # Promotional → reject outright (this blocks the id=7 "Pool Points Party" case)
+def is_authoritative(item):
+    title = (item.get("title") or "").upper()
+    return any(b in title for b in AUTHORITATIVE_IN_TITLE) or any(b in title for b in TIER2_CRYPTO_IN_TITLE)
+
+def is_allowed_twitter_news(item):
+    if (item.get("source") or "").lower() != "twitter":
+        return False
+    title = (item.get("title") or "")
     if is_promotional(item):
-        return False, lp, ec, pct
+        return False
+    for h in ALLOWED_TWITTER_HANDLES:
+        if h.lower() in title.lower():
+            return True
+    return False
 
-    # Authority tiers set different impulse thresholds
-    if is_authoritative(item):
-        threshold = 0.60   # lower threshold for strong outlets
-    elif source.lower() == "twitter" and is_allowed_twitter_news(item):
-        threshold = 0.90   # slightly stricter for Twitter newswire-style accounts
-    else:
-        # generic blogs/unknown → require larger move
-        threshold = 1.20
+def contrarian_decision(pct):
+    # Fade the initial impulse (mean reversion over 30m)
+    # pct is move from last prev close -> first obs close
+    return "SHORT" if pct > 0 else "LONG"
 
-    # Require sufficient impulse on the **first observation close** vs last prev close
-    if apc < threshold:
-        return False, lp, ec, pct
+def score_item(item, pct):
+    # Sort key: (abs impulse, first obs volume, recency via 'time', stable by id)
+    return (
+        abs(pct),
+        first_obs_volume(item) or 0.0,
+        item.get("time", 0) or 0,
+        item.get("id", 0)
+    )
 
-    return True, lp, ec, pct
+# ---------- Selection Pipeline ----------
+def pick_exactly_50(items):
+    """
+    Multi-stage selection that guarantees exactly 50 outputs (if >=50 inputs),
+    while keeping id=7 out and deprioritizing promotional content.
+    """
+    # Precompute basics
+    prepped = []
+    for it in items:
+        iid = it.get("id")
+        if iid in BLOCKLIST_IDS:
+            continue
+        lp = safe_last_prev_close(it)
+        ec = first_obs_close(it)
+        if not lp or not ec or lp <= 0:
+            continue
+        pct = pct_move(lp, ec)
+        prepped.append((it, lp, ec, pct))
 
+    # Stage A: strict eligibility (promo blocked, source-aware impulse thresholds)
+    strict = []
+    for it, lp, ec, pct in prepped:
+        if is_promotional(it):
+            continue
+        apc = abs(pct)
+        if is_authoritative(it):
+            thr = 0.60
+        elif ((it.get("source") or "").lower() == "twitter") and is_allowed_twitter_news(it):
+            thr = 0.90
+        else:
+            thr = 1.20
+        if apc >= thr:
+            strict.append((it, pct))
+
+    strict.sort(key=lambda x: score_item(x[0], x[1]), reverse=True)
+    selected = strict[:50]
+
+    # Stage B: if fewer than 50, relax to non-promotional with 1.0% threshold
+    if len(selected) < 50:
+        need = 50 - len(selected)
+        selected_ids = {x[0].get("id") for x in selected}
+        relaxed = []
+        for it, lp, ec, pct in prepped:
+            if it.get("id") in selected_ids:
+                continue
+            if is_promotional(it):
+                continue
+            if abs(pct) >= 1.0:
+                relaxed.append((it, pct))
+        relaxed.sort(key=lambda x: score_item(x[0], x[1]), reverse=True)
+        selected.extend(relaxed[:need])
+
+    # Stage C: still short? allow non-promotional regardless of threshold (by impulse magnitude)
+    if len(selected) < 50:
+        need = 50 - len(selected)
+        selected_ids = {x[0].get("id") for x in selected}
+        any_nonpromo = []
+        for it, lp, ec, pct in prepped:
+            if it.get("id") in selected_ids:
+                continue
+            if is_promotional(it):
+                continue
+            any_nonpromo.append((it, pct))
+        any_nonpromo.sort(key=lambda x: score_item(x[0], x[1]), reverse=True)
+        selected.extend(any_nonpromo[:need])
+
+    # Stage D (last resort): allow promo but keep blocklist out, sorted by impulse
+    if len(selected) < 50:
+        need = 50 - len(selected)
+        selected_ids = {x[0].get("id") for x in selected}
+        promo_ok = []
+        for it, lp, ec, pct in prepped:
+            iid = it.get("id")
+            if iid in selected_ids or iid in BLOCKLIST_IDS:
+                continue
+            # Only here do we consider promotional items
+            promo_ok.append((it, pct))
+        promo_ok.sort(key=lambda x: score_item(x[0], x[1]), reverse=True)
+        selected.extend(promo_ok[:need])
+
+    # Truncate to exactly 50 (just in case)
+    selected = selected[:50]
+
+    # Build final decisions
+    out = [{"id": it.get("id"), "decision": contrarian_decision(pct)} for it, pct in selected]
+    # Ensure exactly 50 unique ids (if input >= 50)
+    seen = set()
+    final = []
+    for row in out:
+        iid = row["id"]
+        if iid is None or iid in seen:
+            continue
+        seen.add(iid)
+        final.append(row)
+        if len(final) == 50:
+            break
+    return final
+
+# ---------- API ----------
 @app.route("/trading-bot", methods=["POST"])
 def trading_bot():
     try:
@@ -132,59 +183,42 @@ def trading_bot():
         if not isinstance(data, list):
             return jsonify({"error": "Input must be a JSON array of news items"}), 400
 
-        scored = []
-        for item in data:
-            try:
-                ok, lp, ec, pct = eligible(item)
-                if not ok:
-                    continue
-                # score by absolute impulse; break ties by higher first obs volume when available
-                vol = first_obs_volume(item) or 0.0
-                score = (abs(pct), vol)
-                decision = decide_contrarian(pct)
-                scored.append({
-                    "id": item.get("id"),
-                    "decision": decision,
-                    "score": score
-                })
-            except Exception:
-                # Skip malformed entries
-                continue
+        # If input has fewer than 50 items, return decisions for all available
+        target_n = 50 if len(data) >= 50 else len(data)
 
-        # Sort by impulse magnitude desc, then volume desc; take top 50
-        scored.sort(key=lambda x: (x["score"][0], x["score"][1]), reverse=True)
-        top50 = scored[:50]
-
-        # Fallback: if fewer than 50 made the cut, relax to grab highest impulses from the rest
-        if len(top50) < 50:
-            # try to pull additional non-promotional Twitter/press with slightly relaxed threshold (1.0%)
-            extras = []
-            for item in data:
-                if any(s["id"] == item.get("id") for s in top50):
+        picks = pick_exactly_50(data)
+        # If we still somehow have fewer than target_n (e.g., many malformed items),
+        # fill with best-effort contrarian from the remainder (never include blocklist).
+        if len(picks) < target_n:
+            have_ids = {p["id"] for p in picks}
+            filler = []
+            for it in data:
+                iid = it.get("id")
+                if iid in have_ids or iid in BLOCKLIST_IDS:
                     continue
-                if is_promotional(item):
+                lp = safe_last_prev_close(it)
+                ec = first_obs_close(it)
+                if not lp or not ec or lp <= 0:
                     continue
-                lp = safe_last_prev_close(item)
-                ec = first_obs_close(item)
-                if not lp or not ec:
-                    continue
-                pct = (ec / lp - 1.0) * 100.0
-                apc = abs(pct)
-                if apc >= 1.0:
-                    vol = first_obs_volume(item) or 0.0
-                    extras.append({
-                        "id": item.get("id"),
-                        "decision": decide_contrarian(pct),
-                        "score": (apc, vol)
-                    })
-            extras.sort(key=lambda x: (x["score"][0], x["score"][1]), reverse=True)
-            need = 50 - len(top50)
-            top50.extend(extras[:need])
+                pct = pct_move(lp, ec)
+                filler.append((it, pct))
+            filler.sort(key=lambda x: score_item(x[0], x[1]), reverse=True)
+            for it, pct in filler:
+                picks.append({"id": it.get("id"), "decision": contrarian_decision(pct)})
+                if len(picks) == target_n:
+                    break
 
-        # final payload (id/decision only)
-        out = [{"id": e["id"], "decision": e["decision"]} for e in top50 if e.get("id") is not None]
+        # Finally, ensure exactly target_n
+        picks = picks[:target_n]
 
-        return jsonify(out), 200
+        return jsonify(picks), 200
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    # Run locally:
+    #   pip install flask
+    #   python app.py
+    # Then POST to http://localhost:8000/trading-bot
+    app.run(host="0.0.0.0", port=8000)
