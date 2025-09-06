@@ -13,6 +13,8 @@ from flask import Blueprint, request, jsonify
 
 bp = Blueprint("trading_bot", __name__)
 
+from routes import app
+
 
 @bp.route("/trading-bot", methods=["POST"])
 def trading_bot() -> tuple:
