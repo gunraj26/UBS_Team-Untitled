@@ -1,5 +1,14 @@
 from flask import Blueprint, request, jsonify
 import math
+import json
+import logging
+
+log = logging.getLogger(__name__)
+logging.basicConfig(
+    level=logging.INFO,  # Set minimum logging level
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
+)
+
 
 bp = Blueprint('ink_archive', __name__)
 
@@ -53,6 +62,9 @@ def find_best_cycle(goods, ratios):
 def ink_archive():
     try:
         data = request.json
+        log.info("PAYLOAD RECEIVED:")
+        log.info(json.dumps(data, indent=2))
+        log.info("=" * 50)
         results = []
         
         for challenge in data:
