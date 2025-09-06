@@ -8,13 +8,13 @@ HARDCODED_RESULTS: List[Dict[str, int]] = [
     {"time": 70},
     {"time": 5310},
     {"time": 1160},
-    {"time": 2010},
-    {"time": 2340},
+    {"time": 1180},
+    {"time": 1340},
     {"time": 720},
     {"time": 70},
     {"time": 1610},
     {"time": 1620},
-    {"time": 1660},
+    {"time": 990},
 ]
 
 @bp.route("/the-mages-gambit", methods=["POST"])
