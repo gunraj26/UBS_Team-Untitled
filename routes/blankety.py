@@ -2,59 +2,53 @@ import logging
 from flask import request, jsonify
 from routes import app
 import numpy as np
-from scipy.interpolate import interp1d
-from scipy.signal import savgol_filter
+from scipy.interpolate import UnivariateSpline
 
 logger = logging.getLogger(__name__)
 
 def impute_series(series):
     """
-    Impute missing values with adaptive strategy:
-    - all nulls -> zeros
-    - short gaps -> linear interp
-    - longer gaps -> cubic spline
-    - final smoothing -> Savitzky-Golay filter
+    Impute missing values using blended strategy:
+    - Global trend: smoothing spline
+    - Local AR (order 3): rolling neighbor average
+    - Blend: 0.7 * spline + 0.3 * AR
     """
-    arr = np.array([np.nan if v is None else v for v in series], dtype=np.float64)
-    n = len(arr)
+    n = len(series)
     x = np.arange(n)
+    arr = np.array([np.nan if v is None else v for v in series], dtype=np.float64)
 
     not_nan = ~np.isnan(arr)
-
     if not not_nan.any():
         return np.zeros_like(arr).tolist()
-
     if not_nan.sum() == 1:
-        # Only one known point: fill everything with that value
-        val = arr[not_nan][0]
-        return np.full_like(arr, val).tolist()
+        return np.full_like(arr, arr[not_nan][0]).tolist()
 
+    # --- Global smoothing spline ---
     try:
-        # Choose interpolation method adaptively
-        if not_nan.sum() < 4:
-            # Too few points, stick to linear
-            f = interp1d(x[not_nan], arr[not_nan], kind="linear", fill_value="extrapolate")
-        else:
-            # Use cubic spline for more shape preservation
-            f = interp1d(x[not_nan], arr[not_nan], kind="cubic", fill_value="extrapolate")
-
-        arr[~not_nan] = f(x[~not_nan])
-
+        spline = UnivariateSpline(x[not_nan], arr[not_nan], s=len(arr)*0.1)
+        spline_pred = spline(x)
     except Exception as e:
-        logger.warning("Interpolation failed, falling back to linear: %s", e)
-        arr[~not_nan] = np.interp(x[~not_nan], x[not_nan], arr[not_nan])
+        logger.warning("Spline failed: %s", e)
+        spline_pred = np.interp(x, x[not_nan], arr[not_nan])
 
-    # Apply smoothing filter if series is long
-    if n >= 7:
-        try:
-            arr = savgol_filter(arr, window_length=min(21, n - (n+1)%2), polyorder=3)
-        except Exception as e:
-            logger.warning("Savitzky-Golay failed, skipping smoothing: %s", e)
+    # --- Local AR (order 3) ---
+    ar_pred = np.copy(spline_pred)
+    for i in range(n):
+        if np.isnan(arr[i]):
+            # Look at last 3 known/predicted values
+            left_vals = []
+            for k in range(1, 4):
+                if i-k >= 0:
+                    left_vals.append(ar_pred[i-k])
+            if left_vals:
+                ar_pred[i] = np.mean(left_vals)
 
-    # Replace any NaNs/Infs that slipped through
-    arr = np.nan_to_num(arr, nan=0.0, posinf=0.0, neginf=0.0)
+    # --- Blend spline + AR ---
+    blended = 0.7 * spline_pred + 0.3 * ar_pred
 
-    return arr.tolist()
+    # Replace NaNs/Infs
+    blended = np.nan_to_num(blended, nan=0.0, posinf=0.0, neginf=0.0)
+    return blended.tolist()
 
 
 @app.route('/blankety', methods=['POST'])
