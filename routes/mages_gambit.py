@@ -89,10 +89,11 @@ def the_mages_gambit():
             if not isinstance(intel, list):
                 return jsonify({"error": "intel must be a list"}), 400
             
-            if not all(isinstance(item, list) and len(item) == 2 for item in intel):
-                return jsonify({"error": "Each intel item must be [front, mana_cost]"}), 400
+            for item in intel:
+                if not (isinstance(item, list) and len(item) == 2):
+                    return jsonify({"error": "Each intel item must be [front, mana_cost]"}), 400
             
-            if not all(isinstance(reserve, int) and isinstance(fronts, int) and isinstance(stamina, int)):
+            if not (isinstance(reserve, int) and isinstance(fronts, int) and isinstance(stamina, int)):
                 return jsonify({"error": "reserve, fronts, and stamina must be integers"}), 400
             
             if reserve <= 0 or fronts <= 0 or stamina <= 0:
