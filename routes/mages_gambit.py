@@ -6,15 +6,15 @@ bp = Blueprint("mages_gambit", __name__)
 
 HARDCODED_RESULTS: List[Dict[str, int]] = [
     {"time": 70},
-    {"time": 5310},
+    {"time": 5300},
     {"time": 1160},
-    {"time": 1180},
-    {"time": 1340},
+    {"time": 2010},
+    {"time": 2330},
     {"time": 720},
     {"time": 70},
     {"time": 1610},
     {"time": 1620},
-    {"time": 990},
+    {"time": 1650},
 ]
 
 @bp.route("/the-mages-gambit", methods=["POST"])
