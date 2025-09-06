@@ -19,7 +19,7 @@ app = Flask(__name__)
 @app.get("/trivia")
 def trivia():
     return jsonify({
-        "answers": [3, 1, 2]
+        "answers": [3, 1, 2, 2]
     })
 
 # {
