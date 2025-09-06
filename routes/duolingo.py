@@ -55,18 +55,22 @@ EN_SCALES = {
     "hundred":100,"thousand":1000,"million":1_000_000,"billion":1_000_000_000
 }
 
-def maybe_english(s: str) -> bool:
+def _en_norm(s: str) -> list[str]:
+    # normalize tiny spelling & separators
     t = s.lower().replace("-", " ")
+    t = re.sub(r"\bfourty\b", "forty", t)  # common misspelling
     t = re.sub(r"\band\b", " ", t)
     words = [w for w in t.split() if w]
+    return words
+
+def maybe_english(s: str) -> bool:
+    words = _en_norm(s)
     if not words: return False
     dicts = (EN_UNITS | EN_TEENS | EN_TENS | EN_SCALES)
     return all(w in dicts for w in words)
 
 def english_to_int(s: str) -> int:
-    t = s.lower().replace("-", " ")
-    t = re.sub(r"\band\b", " ", t)
-    words = [w for w in t.split() if w]
+    words = _en_norm(s)
     total, current = 0, 0
     for w in words:
         if w in EN_UNITS: current += EN_UNITS[w]
@@ -86,8 +90,10 @@ def english_to_int(s: str) -> int:
 # German numbers (robust parser with Milliarde/Million)
 # ---------------------------
 DE_UNITS = {
-    "null":0,"ein":1,"eins":1,"zwei":2,"drei":3,"vier":4,"fuenf":5,"fuenf":5,"sechs":6,
-    "sieben":7,"acht":8,"neun":9
+    "null":0,"ein":1,"eins":1,"zwei":2,"drei":3,"vier":4,
+    "fuenf":5,"sechs":6,"sieben":7,"acht":8,"neun":9,
+    # safety for truncated 'neun' observed in logs:
+    "eun":9
 }
 # Include both normalized spellings
 DE_TEENS = {
@@ -102,20 +108,29 @@ DE_TENS = {
 
 def _de_norm(s: str) -> str:
     t = s.lower()
-    # unify umlauts/ß to ASCII-friendly keys we support above
+    # umlauts/ß and separators
     t = (t.replace("ä","ae").replace("ö","oe").replace("ü","ue")
            .replace("ß","ss").replace("-", "").replace(" ", ""))
-    # fold-inflected "ein*" to "ein" (eine/einen/einem/einer/eines)
+    # fold inflections of "ein*"
     t = (t.replace("eine","ein").replace("einen","ein")
            .replace("einem","ein").replace("einer","ein").replace("eines","ein"))
+    # targeted real-world slips from your logs
+    t = t.replace("eunzehn", "neunzehn")     # missing 'n' in 'neunzehn'
+    t = t.replace("eunund", "neunund")       # missing 'n' before 'und'
+    if t.startswith("eun"): t = "neun" + t[3:]   # leading stray 'eun'
+    if t.endswith("eun"):  t = t[:-3] + "neun"  # trailing stray 'eun'
+    t = t.replace("reiund", "dreiund")       # dropped 'd' in 'dreiund...'
+    t = t.replace("dreisig", "dreissig")     # misspelling of 30
+    # missing letters in scales
+    t = re.sub(r"hunder(?!t)", "hundert", t) # 'hunder' -> 'hundert'
+    t = re.sub(r"tausen(?!d)", "tausend", t) # 'tausen' -> 'tausend'
     return t
 
 def maybe_german(s: str) -> bool:
     t = _de_norm(s)
-    # quick heuristics: common tokens or scales
     return any(tok in t for tok in [
         "und","zig","zehn","hundert","tausend","million","milliard","null"
-    ]) or t in (DE_UNITS | DE_TEENS | DE_TENS)
+    ]) or (t in DE_UNITS or t in DE_TEENS or t in DE_TENS)
 
 def german_to_int(s: str) -> int:
     t = _de_norm(s)
@@ -132,52 +147,52 @@ def _de_parse(t: str) -> int:
     if not t:
         return 0
 
-    # 1) Billion scale in German = "Milliarde(n)" (1e9)
+    # 1) Milliarde(n) = 1e9
     left, rest, w = _split_first(t, ["milliarden","milliarde"])
     if w:
         mult = _de_parse(left) if left else 1
         return mult * 1_000_000_000 + _de_parse(rest)
 
-    # 2) Million scale
+    # 2) Million(en) = 1e6
     left, rest, w = _split_first(t, ["millionen","million"])
     if w:
         mult = _de_parse(left) if left else 1
         return mult * 1_000_000 + _de_parse(rest)
 
-    # 3) Thousand scale
+    # 3) tausend = 1e3
     left, rest, w = _split_first(t, ["tausend"])
     if w:
         mult = _de_parse(left) if left else 1
         return mult * 1000 + _de_parse(rest)
 
-    # 4) Hundred scale
+    # 4) hundert = 100
     left, rest, w = _split_first(t, ["hundert"])
     if w:
         mult = _de_parse(left) if left else 1
         return mult * 100 + _de_parse(rest)
 
-    # 5) Direct matches (teens/tens/units)
+    # 5) direct matches
     if t in DE_TEENS: return DE_TEENS[t]
-    # normalize doppel-spellings for tens
-    if t in DE_TENS: return DE_TENS[t]
+    if t in DE_TENS:  return DE_TENS[t]
     if t in DE_UNITS: return DE_UNITS[t]
 
-    # 6) "unit-und-tens" pattern (e.g., siebenundachtzig)
+    # 6) "unit-und-tens" (e.g., siebenundachtzig)
     m = re.fullmatch(r"([a-z]+)und([a-z]+)", t)
     if m:
-        u, tens = m.group(1), m.group(2)
-        # Units may come as "ein" or "eins" etc.
-        u_val = DE_UNITS.get(u)
-        tens_val = DE_TENS.get(tens)
-        if u_val is not None and tens_val is not None:
-            return tens_val + u_val
+        u, ten = m.group(1), m.group(2)
+        if u not in DE_UNITS and u.endswith("e") and u[:-1] in DE_UNITS:
+            u = u[:-1]
+        u_val  = DE_UNITS.get(u)
+        ten_val = DE_TENS.get(ten)
+        if u_val is not None and ten_val is not None:
+            return ten_val + u_val
 
-    # If we still don't know it, try a tiny fallback: some inputs may end with "eins"/"ein" tacked to a tens (e.g., "dreissigeins")
-    for tens_key, tens_val in DE_TENS.items():
-        if t.startswith(tens_key):
-            rest = t[len(tens_key):]
-            if rest in ("ein","eins"):
-                return tens_val + 1
+    # 7) tens + unit glued (e.g., dreissigeins)
+    for tk, tv in DE_TENS.items():
+        if t.startswith(tk):
+            rest = t[len(tk):]
+            if rest in DE_UNITS:
+                return tv + DE_UNITS[rest]
 
     raise ValueError(f"Unknown German number: {t}")
 
