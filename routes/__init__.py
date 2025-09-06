@@ -10,6 +10,7 @@ import routes.duolingo
 import routes.fog_of_wall
 import routes.micro_mouse
 import routes.operation_safegaurd
+import routes.chasetheflag
 
 # --- import blueprints ---
 # from .trading_formula import trading_formula_bp
