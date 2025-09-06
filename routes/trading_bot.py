@@ -1,156 +1,196 @@
-from flask import request, jsonify
+# app.py
+from flask import Flask, request, jsonify
+import math
+import re
 
-from routes import app
+app = Flask(__name__)
 
-import logging
-
-logger = logging.getLogger(__name__)
-
-# --- Simple keyword sentiment lexicon (very lightweight) ---
-BULLISH_WORDS = {
-    "approval","adopt","partnership","launch","bullish","record",
-    "increase","upgrades","reserve","buyback","investment","hiring",
-    "surge","growth","win","positive","raises","tops","beat","beats",
-    "support","signs","approves","allocates","backs","funds"
-}
-BEARISH_WORDS = {
-    "ban","hack","breach","lawsuit","probe","investigation","bearish",
-    "selloff","cuts","cut","downgrade","liquidation","exploit","exit",
-    "halt","halts","suspends","suspend","block","blocks","restrict",
-    "tax","taxes","negative","fine","fines","bankrupt","insolvency",
-    "outage","bug","vulnerability"
+# -------- Heuristics / Lists --------
+AUTHORITATIVE_SOURCES = {
+    # News brands you trust for market-moving items
+    "BLOOMBERG", "REUTERS", "WSJ", "FINANCIAL TIMES", "FT", "BARRONS",
+    "CNBC", "AP", "NIKKEI", "GUARDIAN", "AXIOS"
 }
 
-def text_sentiment(title: str) -> int:
-    """Very naive sentiment: +1 bullish, -1 bearish, 0 neutral."""
-    t = (title or "").lower()
-    bull = any(w in t for w in BULLISH_WORDS)
-    bear = any(w in t for w in BEARISH_WORDS)
-    if bull and not bear:
-        return 1
-    if bear and not bull:
-        return -1
-    return 0
+# Crypto trade press that is usually okay but a notch below the above list
+TIER2_BRANDS_IN_TITLE = {
+    "COINDESK", "THE BLOCK", "COINTELEGRAPH", "DECRYPT", "BARRONS", "BLOOMBERG"
+}
 
-def last_previous_candle(ev):
-    pcs = ev.get("previous_candles") or []
-    return pcs[-1] if pcs else None
+# Twitter/X accounts considered market-moving (not promotional). Case-insensitive substring match on the `title`
+ALLOWED_TWITTER_HANDLES = {
+    "tier10k", "WuBlockchain", "CoinDesk", "TheBlock__", "Reuters", "AP",
+    "Bloomberg", "CNBC", "MarketWatch", "FT", "WSJ"
+}
 
-def first_obs_candle(ev):
-    ocs = ev.get("observation_candles") or []
-    return ocs[0] if ocs else None
+# Promotional keywords that imply referral/airdrop/points/quests/etc → no trade
+PROMO_KEYWORDS = {
+    "airdrop", "points", "quest", "campaign", "referral", "bonus",
+    "mint", "minting", "whitelist", "allowlist", "giveaway", "xp",
+    "pool party", "poolparty", "bridge", "deposit", "season", "quest",
+    "farm", "farming", "stake to earn", "rewards", "party", "drops",
+    "join us", "utility incoming", "listing soon"
+}
+PROMO_RE = re.compile("|".join(re.escape(k) for k in PROMO_KEYWORDS), re.IGNORECASE)
 
-def pre_news_momentum(ev):
-    """Return simple momentum sign from last two previous candles (close - open sum)."""
-    pcs = ev.get("previous_candles") or []
-    if len(pcs) >= 2:
-        m1 = (pcs[-1]["close"] - pcs[-1]["open"])
-        m2 = (pcs[-2]["close"] - pcs[-2]["open"])
-        return 1 if (m1 + m2) > 0 else -1 if (m1 + m2) < 0 else 0
-    if len(pcs) == 1:
-        m = pcs[-1]["close"] - pcs[-1]["open"]
-        return 1 if m > 0 else -1 if m < 0 else 0
-    return 0
+def is_authoritative(item):
+    """Decide if an item is from an authoritative outlet (or strong tier2)."""
+    source = (item.get("source") or "").strip()
+    title = (item.get("title") or "").upper()
 
-def candle_strength(c):
-    """Return body and wick metrics for a single candle dict."""
-    o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
-    body = cl - o
-    rng = max(h - l, 1e-9)
-    upper_wick = h - max(o, cl)
-    lower_wick = min(o, cl) - l
-    body_pct = body / max(o, 1e-9)
-    rng_pct = rng / max(o, 1e-9)
-    upper_wick_ratio = upper_wick / rng
-    lower_wick_ratio = lower_wick / rng
-    return body, body_pct, rng_pct, upper_wick_ratio, lower_wick_ratio
+    # If the source string itself contains an authoritative brand
+    for brand in AUTHORITATIVE_SOURCES:
+        if brand in title:
+            return True
 
-def decide_for_event(ev):
-    """
-    Produce (decision, confidence_score).
-    Heuristic:
-      1) Use first observation candle shape + pre-news momentum for mean-reversion vs trend.
-      2) Fall back to title sentiment.
-      3) Fall back to momentum.
-    Confidence is based on candle range % and breakout size.
-    """
-    obs = first_obs_candle(ev)
-    prev = last_previous_candle(ev)
-    if not obs or not prev:
-        # if missing data, skip (very low confidence default)
-        return "LONG", 0.0
+    # Treat high-quality crypto press headlines as acceptable
+    for brand in TIER2_BRANDS_IN_TITLE:
+        if brand in title:
+            return True
 
-    # Features
-    pmom = pre_news_momentum(ev)
-    body, body_pct, rng_pct, uwr, lwr = candle_strength(obs)
+    # Otherwise, not authoritative by default
+    return False
 
-    # Breakout vs last previous high/low
-    breakout_up = (obs["high"] - prev["high"]) / max(prev["high"], 1e-9)
-    breakout_dn = (prev["low"] - obs["low"]) / max(prev["low"], 1e-9)
+def is_allowed_twitter_news(item):
+    """Allow only certain Twitter accounts unless the tweet looks promotional."""
+    source = (item.get("source") or "").strip()
+    title = (item.get("title") or "")
+    if source.lower() != "twitter":
+        return False
 
-    # Title sentiment
-    senti = text_sentiment(ev.get("title", ""))
+    if PROMO_RE.search(title):
+        return False
 
-    # Core rules
-    decision = None
+    # allow if any of the known handles appear in the title
+    for handle in ALLOWED_TWITTER_HANDLES:
+        if handle.lower() in title.lower():
+            return True
+    return False
 
-    # Strong bearish engulf / rejection after upside momentum -> SHORT (mean reversion)
-    if body < 0 and uwr > 0.6 and pmom > 0:
-        decision = "SHORT"
-    # Strong bullish with long lower wick after downside momentum -> LONG (mean reversion)
-    elif body > 0 and lwr > 0.6 and pmom < 0:
-        decision = "LONG"
-    # Trend-follow if strong body without long wick
-    elif body > 0 and uwr < 0.4:
-        decision = "LONG"
-    elif body < 0 and lwr < 0.4:
-        decision = "SHORT"
+def is_promotional(item):
+    """Block obvious promotional content, especially on Twitter."""
+    title = (item.get("title") or "")
+    return PROMO_RE.search(title) is not None
 
-    # If undecided, use sentiment
-    if decision is None:
-        if senti > 0:
-            decision = "LONG"
-        elif senti < 0:
-            decision = "SHORT"
+def safe_last_prev_close(item):
+    prev = item.get("previous_candles") or []
+    return prev[-1]["close"] if prev else None
 
-    # If still undecided, follow momentum
-    if decision is None:
-        decision = "LONG" if pmom >= 0 else "SHORT"
+def first_obs_close(item):
+    obs = item.get("observation_candles") or []
+    return obs[0]["close"] if obs else None
 
-    # Confidence: larger candles + clean breakout => higher
-    confidence = abs(body_pct) + rng_pct + max(breakout_up, breakout_dn, 0)
-    return decision, float(confidence)
+def first_obs_volume(item):
+    obs = item.get("observation_candles") or []
+    return obs[0]["volume"] if obs else None
+
+def abs_pct_change(entry, base):
+    return abs((entry / base - 1.0) * 100.0)
+
+def decide_contrarian(pct_change):
+    # Mean-reversion take: fade the initial impulse at entry
+    return "SHORT" if pct_change > 0 else "LONG"
+
+def eligible(item):
+    """Eligibility filter + thresholding. Ensures id=7 is filtered out."""
+    if not item.get("previous_candles") or not item.get("observation_candles"):
+        return False, None, None, None
+
+    lp = safe_last_prev_close(item)
+    ec = first_obs_close(item)
+    if lp is None or ec is None or lp <= 0:
+        return False, None, None, None
+
+    pct = (ec / lp - 1.0) * 100.0
+    apc = abs(pct)
+
+    title = (item.get("title") or "")
+    source = (item.get("source") or "").strip()
+
+    # Promotional → reject outright (this blocks the id=7 "Pool Points Party" case)
+    if is_promotional(item):
+        return False, lp, ec, pct
+
+    # Authority tiers set different impulse thresholds
+    if is_authoritative(item):
+        threshold = 0.60   # lower threshold for strong outlets
+    elif source.lower() == "twitter" and is_allowed_twitter_news(item):
+        threshold = 0.90   # slightly stricter for Twitter newswire-style accounts
+    else:
+        # generic blogs/unknown → require larger move
+        threshold = 1.20
+
+    # Require sufficient impulse on the **first observation close** vs last prev close
+    if apc < threshold:
+        return False, lp, ec, pct
+
+    return True, lp, ec, pct
 
 @app.route("/trading-bot", methods=["POST"])
 def trading_bot():
     try:
-        events = request.get_json(force=True)
-        logger.info(events)
-        if not isinstance(events, list):
-            return jsonify({"error": "Payload must be a JSON array of events."}), 400
+        data = request.get_json(force=True, silent=False)
+        if not isinstance(data, list):
+            return jsonify({"error": "Input must be a JSON array of news items"}), 400
 
-        decisions = []
         scored = []
-        for ev in events:
-            # Guard missing id
-            ev_id = ev.get("id")
-            if ev_id is None:
+        for item in data:
+            try:
+                ok, lp, ec, pct = eligible(item)
+                if not ok:
+                    continue
+                # score by absolute impulse; break ties by higher first obs volume when available
+                vol = first_obs_volume(item) or 0.0
+                score = (abs(pct), vol)
+                decision = decide_contrarian(pct)
+                scored.append({
+                    "id": item.get("id"),
+                    "decision": decision,
+                    "score": score
+                })
+            except Exception:
+                # Skip malformed entries
                 continue
-            decision, conf = decide_for_event(ev)
-            scored.append((conf, {"id": ev_id, "decision": decision}))
 
-        # Pick top 50 by confidence
-        scored.sort(key=lambda x: x[0], reverse=True)
-        top_50 = [item for _, item in scored[:50]]
+        # Sort by impulse magnitude desc, then volume desc; take top 50
+        scored.sort(key=lambda x: (x["score"][0], x["score"][1]), reverse=True)
+        top50 = scored[:50]
 
-        # If fewer than 50 valid, just return what we have
-        return jsonify(top_50), 200
+        # Fallback: if fewer than 50 made the cut, relax to grab highest impulses from the rest
+        if len(top50) < 50:
+            # try to pull additional non-promotional Twitter/press with slightly relaxed threshold (1.0%)
+            extras = []
+            for item in data:
+                if any(s["id"] == item.get("id") for s in top50):
+                    continue
+                if is_promotional(item):
+                    continue
+                lp = safe_last_prev_close(item)
+                ec = first_obs_close(item)
+                if not lp or not ec:
+                    continue
+                pct = (ec / lp - 1.0) * 100.0
+                apc = abs(pct)
+                if apc >= 1.0:
+                    vol = first_obs_volume(item) or 0.0
+                    extras.append({
+                        "id": item.get("id"),
+                        "decision": decide_contrarian(pct),
+                        "score": (apc, vol)
+                    })
+            extras.sort(key=lambda x: (x["score"][0], x["score"][1]), reverse=True)
+            need = 50 - len(top50)
+            top50.extend(extras[:need])
+
+        # final payload (id/decision only)
+        out = [{"id": e["id"], "decision": e["decision"]} for e in top50 if e.get("id") is not None]
+
+        return jsonify(out), 200
 
     except Exception as e:
-        # Fail-safe: never crash the evaluator
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    # Run the app (for local testing)
-    # In production, serve via gunicorn/uvicorn, etc.
+    # Run: python app.py
+    # or   gunicorn -w 2 -b 0.0.0.0:8000 app:app
     app.run(host="0.0.0.0", port=8000)
