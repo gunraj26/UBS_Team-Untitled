@@ -1,4 +1,5 @@
 from __future__ import annotations
+from flask import Blueprint, request, jsonify
 
 """
 Flask application exposing a single endpoint for evaluating LaTeX
@@ -8,8 +9,7 @@ conversion and evaluation logic.
 
 from formula_engine import evaluate_formula
 
-app = Flask(__name__)  # type: ignore
-
+from routes import app
 
 @app.route('/trading-formula', methods=['POST'])  # type: ignore
 def trading_formula():
