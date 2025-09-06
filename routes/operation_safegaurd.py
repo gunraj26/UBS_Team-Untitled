@@ -331,10 +331,6 @@ def operation_safeguard():
     except Exception as e:
         return jsonify({"error": f"An error occurred: {e}"}), 500
 
-@app.route("/health", methods=["GET"])
-def health_check():
-    return jsonify({"status": "healthy", "message": "Operation Safeguard API is running"}), 200
-
 # -----------------------------------------------------------------------------
 # Entrypoint
 # -----------------------------------------------------------------------------
