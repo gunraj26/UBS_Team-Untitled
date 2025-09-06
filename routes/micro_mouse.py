@@ -2,7 +2,7 @@ from flask import Flask, request, jsonify
 from typing import List, Optional, Dict, Any
 import uuid
 
-app = Flask(__name__)
+from routes import app
 
 # Valid movement tokens as defined in the specification
 VALID_TOKENS = {
