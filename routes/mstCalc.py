@@ -5,6 +5,15 @@ from typing import List, Tuple, Dict, Any
 from flask import Flask, request, jsonify
 from openai import OpenAI
 from dotenv import load_dotenv
+
+import json
+import logging
+
+from flask import request
+
+from routes import app
+
+
 load_dotenv()
 
 # --- Config / logging ---
