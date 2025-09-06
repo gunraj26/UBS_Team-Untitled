@@ -3,8 +3,7 @@ from flask import Flask, request, jsonify
 import math
 import re
 
-app = Flask(__name__)
-
+from routes import app
 # -------- Heuristics / Lists --------
 AUTHORITATIVE_SOURCES = {
     # News brands you trust for market-moving items
@@ -189,8 +188,3 @@ def trading_bot():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
-
-if __name__ == "__main__":
-    # Run: python app.py
-    # or   gunicorn -w 2 -b 0.0.0.0:8000 app:app
-    app.run(host="0.0.0.0", port=8000)
