@@ -1,99 +1,100 @@
-from flask import Blueprint, request, jsonify
-import math
 import json
+import logging
 
-bp = Blueprint('ink_archive', __name__)
+from flask import request
 
-def find_best_cycle(goods, ratios):
-    """Find the most profitable trading cycle"""
-    n = len(goods)
-    best_gain = 0
-    best_cycle = []
-    
-    # Create rate lookup dictionary
-    rate_dict = {}
-    for ratio in ratios:
-        from_good, to_good, rate = int(ratio[0]), int(ratio[1]), ratio[2]
-        if rate > 0:
-            rate_dict[(from_good, to_good)] = rate
-    
-    # Try all possible cycles of length 3, 4, and 5
-    # Length 3 cycles
-    for i in range(n):
-        for j in range(n):
-            for k in range(n):
-                if i != j and j != k and k != i:
-                    if (i, j) in rate_dict and (j, k) in rate_dict and (k, i) in rate_dict:
-                        rate = rate_dict[(i, j)] * rate_dict[(j, k)] * rate_dict[(k, i)]
-                        if rate > 1:
-                            gain = (rate - 1) * 100
-                            if gain > best_gain:
-                                best_gain = gain
-                                best_cycle = [goods[i], goods[j], goods[k], goods[i]]
-    
-    # Length 4 cycles
-    for i in range(n):
-        for j in range(n):
-            for k in range(n):
-                for l in range(n):
-                    if len(set([i, j, k, l])) == 4:  # All different
-                        if ((i, j) in rate_dict and (j, k) in rate_dict and 
-                            (k, l) in rate_dict and (l, i) in rate_dict):
-                            rate = (rate_dict[(i, j)] * rate_dict[(j, k)] * 
-                                   rate_dict[(k, l)] * rate_dict[(l, i)])
-                            if rate > 1:
-                                gain = (rate - 1) * 100
-                                if gain > best_gain:
-                                    best_gain = gain
-                                    best_cycle = [goods[i], goods[j], goods[k], goods[l], goods[i]]
-    
-    # Length 5 cycles (for goods with more than 4 items)
-    if n >= 5:
-        for i in range(n):
-            for j in range(n):
-                for k in range(n):
-                    for l in range(n):
-                        for m in range(n):
-                            if len(set([i, j, k, l, m])) == 5:  # All different
-                                if ((i, j) in rate_dict and (j, k) in rate_dict and 
-                                    (k, l) in rate_dict and (l, m) in rate_dict and (m, i) in rate_dict):
-                                    rate = (rate_dict[(i, j)] * rate_dict[(j, k)] * 
-                                           rate_dict[(k, l)] * rate_dict[(l, m)] * rate_dict[(m, i)])
-                                    if rate > 1:
-                                        gain = (rate - 1) * 100
-                                        if gain > best_gain:
-                                            best_gain = gain
-                                            best_cycle = [goods[i], goods[j], goods[k], goods[l], goods[m], goods[i]]
-    
-    return best_cycle, best_gain
+from routes import app
 
-@bp.route('/The-Ink-Archive', methods=['POST'])
-def ink_archive():
-    try:
-        data = request.json
-        
-        # Log the payload
-        print("PAYLOAD RECEIVED:")
-        print(json.dumps(data, indent=2))
-        print("=" * 50)
-        
-        results = []
-        
-        for challenge in data:
-            goods = challenge['goods']
-            ratios = challenge['ratios']
-            
-            path, gain = find_best_cycle(goods, ratios)
-            
-            results.append({
-                "path": path,
-                "gain": gain
-            })
-        
-        print("RESPONSE SENT:")
-        print(json.dumps(results, indent=2))
-        print("=" * 50)
-        
-        return jsonify(results)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+logger = logging.getLogger(__name__)
+
+
+def merge_intervals(intervals):
+    """
+    Merge overlapping or contiguous intervals.
+    Intervals that touch (e.g., [5,8] and [8,10]) are treated as a single busy period.
+    """
+    if not intervals:
+        return []
+    # Sort intervals by start time
+    intervals_sorted = sorted(intervals, key=lambda iv: iv[0])
+    merged = []
+    for start, end in intervals_sorted:
+        if not merged:
+            merged.append([start, end])
+            continue
+        last_start, last_end = merged[-1]
+        # If current interval overlaps or touches the previous, merge them
+        if start <= last_end:
+            merged[-1][1] = max(last_end, end)
+        else:
+            merged.append([start, end])
+    return merged
+
+
+def minimum_boats_required(intervals):
+    """
+    Compute the maximum number of simultaneous bookings.
+    Treat end times as exclusive so [5,8] and [8,10] do not overlap.
+    """
+    if not intervals:
+        return 0
+    events = []
+    for start, end in intervals:
+        events.append((start, 1))   # start of booking
+        events.append((end, -1))    # end of booking
+    # Sort events; process end (-1) before start (+1) at the same time
+    events.sort(key=lambda ev: (ev[0], ev[1]))
+    max_overlap = 0
+    current_overlap = 0
+    for _, delta in events:
+        current_overlap += delta
+        if current_overlap > max_overlap:
+            max_overlap = current_overlap
+    return max_overlap
+
+
+@app.route('/sailing-club', methods=['POST'])
+def evaluate2():
+    """
+    Handle POST requests containing test cases for the sailing club.
+    Each test case should have an 'id' and an 'input' list of [start, end] bookings.
+    Returns merged busy periods and the minimum number of boats needed.
+    """
+    data = request.get_json(force=True, silent=True) or {}
+    logging.info("data sent for evaluation {}".format(data))
+
+    test_cases = data.get("testCases", [])
+    solutions = []
+
+    for case in test_cases:
+        case_id = case.get("id")
+        intervals = case.get("input", [])
+
+        # Validate and normalize intervals
+        valid_intervals = []
+        for iv in intervals:
+            try:
+                start, end = iv
+                start_int = int(start)
+                end_int = int(end)
+                if start_int > end_int:
+                    start_int, end_int = end_int, start_int
+                valid_intervals.append([start_int, end_int])
+            except Exception:
+                logger.warning("Skipping invalid interval %s in test case %s", iv, case_id)
+                continue
+
+        # Merge intervals for part 1
+        merged_slots = merge_intervals(valid_intervals)
+        # Calculate minimum boats for part 2
+        min_boats = minimum_boats_required(valid_intervals)
+
+        solutions.append({
+            "id": case_id,
+            "sortedMergedSlots": merged_slots,
+            "minBoatsNeeded": min_boats
+        })
+
+    result = {"solutions": solutions}
+    logging.info("My result :{}".format(result))
+    return json.dumps(result)
