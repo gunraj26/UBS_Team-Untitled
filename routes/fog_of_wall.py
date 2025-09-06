@@ -506,12 +506,45 @@ def fog_of_wall():
         challenger_id = payload.get('challenger_id')
         game_id = payload.get('game_id')
         
+        logger.info(f"Received request: challenger_id={challenger_id}, game_id={game_id}, has_test_case={'test_case' in payload}, has_previous_action={'previous_action' in payload}")
+        
         if not challenger_id or not game_id:
             return jsonify({'error': 'Missing challenger_id or game_id'}), 400
             
         # Check if this is an initial request
         if 'test_case' in payload:
-            # Initialize new game
+            # Check if game already exists
+            if game_id in game_manager.games:
+                logger.warning(f"Game {game_id} already exists, returning current state")
+                # Return the existing game state instead of overwriting
+                game_state = game_manager.games[game_id]
+                crows = game_state['crows']
+                
+                if not crows:
+                    logger.error(f"Game {game_id} exists but has no crows. This indicates a corrupted game state.")
+                    # Try to restart the game with the new test case
+                    logger.info(f"Attempting to restart game {game_id} with new test case")
+                    try:
+                        game_manager.start_new_game(game_id, payload['test_case'])
+                        game_state = game_manager.games[game_id]
+                        crows = game_state['crows']
+                        
+                        if not crows:
+                            return jsonify({'error': 'No crows available even after restart'}), 400
+                    except Exception as e:
+                        logger.error(f"Failed to restart game: {str(e)}")
+                        return jsonify({'error': f'Failed to restart game: {str(e)}'}), 400
+                    
+                # Return the first available crow for scanning
+                first_crow_id = list(crows.keys())[0]
+                return jsonify({
+                    'challenger_id': challenger_id,
+                    'game_id': game_id,
+                    'crow_id': first_crow_id,
+                    'action_type': 'scan'
+                })
+            
+            # Initialize new game only if it doesn't exist
             test_case = payload['test_case']
             try:
                 game_manager.start_new_game(game_id, test_case)
