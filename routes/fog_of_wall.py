@@ -484,6 +484,10 @@ def fog_of_wall():
         action_type = previous_action.get('your_action')
         crow_id = previous_action.get('crow_id')
         
+        # Validate that we have the required fields
+        if not action_type or not crow_id:
+            return jsonify({'error': 'Missing action_type or crow_id in previous_action'}), 400
+        
         if action_type == 'move':
             # Process move result
             move_result = previous_action.get('move_result', [])
