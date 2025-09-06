@@ -9,13 +9,14 @@ import routes.blankety
 import routes.princess
 import routes.fog_of_wall
 import routes.trading_formula
+import routes.mstCalc
 
 # --- import blueprints ---
 from .trading_formula import trading_formula_bp
 # (if you have these, import them as well)
 # from .square import square_bp
 # from .investigate import investigate_bp
-import routes.MST
+
 # --- register blueprints ---
 app.register_blueprint(trading_formula_bp)        # exposes POST /trading-formula        
 # app.register_blueprint(square_bp)
