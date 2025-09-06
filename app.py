@@ -11,6 +11,18 @@ logger = logging.getLogger(__name__)
 def default_route():
     return 'Python Template'
 
+# app.py
+from flask import Flask, jsonify
+
+app = Flask(__name__)
+
+@app.get("/trivia")
+def trivia():
+    return jsonify({
+        "answers": [4, 3, 2, 2, 3, 4, 2, 5, 4]
+    })
+
+
 
 logger = logging.getLogger()
 handler = logging.StreamHandler()
