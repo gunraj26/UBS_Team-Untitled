@@ -4,6 +4,7 @@ app = Flask(__name__)
 import routes.square
 import routes.trading_formula
 import routes.trading_bot
+import routes.mages_gambit
 
 
 # --- import blueprints ---
