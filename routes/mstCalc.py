@@ -76,29 +76,27 @@ VISION_SYS_PROMPT = (
 
 def call_openai_extract(img_b64: str) -> Dict[str, Any]:
     """Call OpenAI vision to get nodes + edges JSON."""
-    resp = client.responses.create(
-        model="gpt-4.1",  # change to gpt-4o-mini for cheaper/faster runs
-        input=[
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",  # Using gpt-4o-mini for cheaper/faster runs
+        messages=[
             {
                 "role": "system",
-                "content": [
-                    {"type": "input_text", "text": VISION_SYS_PROMPT},
-                ],
+                "content": VISION_SYS_PROMPT,
             },
             {
                 "role": "user",
                 "content": [
-                    {"type": "input_text", "text": "Extract the graph and return ONLY the JSON object."},
+                    {"type": "text", "text": "Extract the graph and return ONLY the JSON object."},
                     {
-                        "type": "input_image",
-                        "image_url": f"data:image/png;base64,{img_b64}",
+                        "type": "image_url",
+                        "image_url": {"url": f"data:image/png;base64,{img_b64}"},
                     },
                 ],
             },
         ],
         temperature=0,
     )
-    text = resp.output_text.strip()
+    text = resp.choices[0].message.content.strip()
 
     # Handle possible code fences
     if text.startswith("```"):
