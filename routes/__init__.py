@@ -10,15 +10,18 @@ import routes.princess
 import routes.fog_of_wall
 
 import routes.trading_formula
+import routes.ink_archive
 
 # --- import blueprints ---
 from .trading_formula import trading_formula_bp
+from .ink_archive import ink_archive_bp
 # (if you have these, import them as well)
 # from .square import square_bp
 # from .investigate import investigate_bp
 
 # --- register blueprints ---
 app.register_blueprint(trading_formula_bp)        # exposes POST /trading-formula
+app.register_blueprint(ink_archive_bp)            # exposes POST /The-Ink-Archive
 # app.register_blueprint(square_bp)
 # app.register_blueprint(investigate_bp)
 

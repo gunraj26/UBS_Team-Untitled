@@ -59,6 +59,9 @@ class FogOfWallGame:
         if game_id not in self.games:
             return
             
+        if not scan_data or not isinstance(scan_data, list):
+            return
+            
         game = self.games[game_id]
         game['move_count'] += 1
         
@@ -67,6 +70,8 @@ class FogOfWallGame:
         
         # Process the 5x5 scan grid
         for i, row in enumerate(scan_data):
+            if not isinstance(row, list):
+                continue
             for j, cell in enumerate(row):
                 if cell == 'W':  # Wall found
                     # Convert relative position to absolute
@@ -490,16 +495,16 @@ def fog_of_wall():
         
         if action_type == 'move':
             # Process move result
-            move_result = previous_action.get('move_result', [])
-            if len(move_result) == 2:
+            move_result = previous_action.get('move_result')
+            if move_result and isinstance(move_result, list) and len(move_result) == 2:
                 new_x, new_y = move_result
                 game_manager.update_crow_position(game_id, crow_id, new_x, new_y)
                 
         elif action_type == 'scan':
             # Process scan result
-            scan_result = previous_action.get('scan_result', [])
+            scan_result = previous_action.get('scan_result')
             crow_pos = game_manager.get_crow_position(game_id, crow_id)
-            if crow_pos and scan_result:
+            if crow_pos and scan_result and isinstance(scan_result, list):
                 game_manager.add_scan_result(game_id, crow_id, crow_pos['x'], crow_pos['y'], scan_result)
                 
         # Check if game is complete
@@ -514,8 +519,11 @@ def fog_of_wall():
             })
             
         # Get next action
+        if game_id not in game_manager.games:
+            return jsonify({'error': 'Game not found'}), 404
+            
         game_state = game_manager.games[game_id]
-        crows = game_state['crows']
+        crows = game_state.get('crows', {})
         explorer = MazeExplorer(game_state['grid_size'])
         
         next_crow, next_action, direction = explorer.get_next_action(game_state, crows)
