@@ -903,17 +903,28 @@ Example response:
     challenge_three_out = None
     
     if log_string:
-        # Parse log entry to extract cipher type and encrypted payload
-        import re
-        
-        # Extract cipher type and encrypted payload from log
-        cipher_match = re.search(r'CIPHER_TYPE:\s*(\w+)', log_string)
-        payload_match = re.search(r'ENCRYPTED_PAYLOAD:\s*(\w+)', log_string)
-        
-        if cipher_match and payload_match:
-            cipher_type = cipher_match.group(1)
-            encrypted_payload = payload_match.group(1)
+        # Handle different data types for challenge three
+        if isinstance(log_string, dict):
+            # If it's already a dictionary, extract the relevant fields
+            cipher_type = log_string.get("cipher_type", log_string.get("CIPHER_TYPE", ""))
+            encrypted_payload = log_string.get("encrypted_payload", log_string.get("ENCRYPTED_PAYLOAD", ""))
+        elif isinstance(log_string, str):
+            # Parse log entry to extract cipher type and encrypted payload
+            import re
             
+            # Extract cipher type and encrypted payload from log
+            cipher_match = re.search(r'CIPHER_TYPE:\s*(\w+)', log_string)
+            payload_match = re.search(r'ENCRYPTED_PAYLOAD:\s*(\w+)', log_string)
+            
+            cipher_type = cipher_match.group(1) if cipher_match else ""
+            encrypted_payload = payload_match.group(1) if payload_match else ""
+        else:
+            # Handle other types (list, etc.)
+            challenge_three_out = {"error": f"Unsupported challenge_three data type: {type(log_string).__name__}"}
+            cipher_type = ""
+            encrypted_payload = ""
+        
+        if cipher_type and encrypted_payload:
             # Implement cipher decryption functions
             def decrypt_railfence(text, rails=config.DEFAULT_RAILFENCE_RAILS):
                 """Decrypt rail fence cipher with 3 rails"""
@@ -1044,7 +1055,8 @@ Example response:
                 "decrypted_text": decrypted_text
             }
         else:
-            challenge_three_out = {"error": "Could not parse cipher type or encrypted payload from log"}
+            if not challenge_three_out:  # Only set error if not already set above
+                challenge_three_out = {"error": "Could not parse cipher type or encrypted payload from log"}
     else:
         challenge_three_out = {"error": "No challenge_three log string provided"}
 
