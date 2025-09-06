@@ -3,8 +3,12 @@ import xml.etree.ElementTree as ET
 import re
 from typing import Dict, List, Tuple, Optional
 import random
+import logging
+
+logger = logging.getLogger(__name__)
 
 slpu = Blueprint('slpu', __name__)
+
 
 class SnakesLaddersGame:
     def __init__(self, board_width: int, board_height: int, jumps: Dict[int, int]):
@@ -197,6 +201,8 @@ def solve_snakes_ladders():
     try:
         # Get SVG content from request
         svg_content = request.data.decode('utf-8')
+
+        logger.info(svg_content)
         
         # Parse the board
         board_width, board_height, jumps = parse_svg_board(svg_content)
