@@ -5,10 +5,6 @@ from collections import Counter
 
 from routes import app
 
-import logging
-
-logger = logging.getLogger(__name__)
-
 # Challenge 1: Transformation Functions
 def mirror_words(text):
     """Reverse each word in the sentence, keeping word order"""
@@ -110,18 +106,25 @@ def reverse_encode_index_parity(text):
     return ' '.join(result)
 
 def reverse_double_consonants(text):
-    """Remove doubled consonants"""
+    """Remove doubled consonants - handles multiple consecutive duplicates"""
     vowels = set('aeiouAEIOU')
     result = ""
     i = 0
     while i < len(text):
-        if (text[i].isalpha() and text[i] not in vowels and 
-            i + 1 < len(text) and text[i] == text[i + 1]):
-            result += text[i]
-            i += 2  # Skip the doubled character
+        char = text[i]
+        if char.isalpha() and char not in vowels:
+            # Count consecutive occurrences of this consonant
+            count = 1
+            while i + count < len(text) and text[i + count] == char:
+                count += 1
+            
+            # Add only one instance of the consonant
+            result += char
+            i += count
         else:
-            result += text[i]
+            result += char
             i += 1
+    
     return result
 
 # Function mapping
@@ -337,7 +340,6 @@ def solve_challenge_four(param1, param2, param3):
 def operation_safeguard():
     try:
         data = request.json
-        logger.info(data)
         
         if not data:
             return jsonify({"error": "No JSON data provided"}), 400
