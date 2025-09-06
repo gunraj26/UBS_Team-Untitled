@@ -5,6 +5,10 @@ from collections import Counter
 
 from routes import app
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 # Challenge 1: Transformation Functions
 def mirror_words(text):
     """Reverse each word in the sentence, keeping word order"""
@@ -333,6 +337,7 @@ def solve_challenge_four(param1, param2, param3):
 def operation_safeguard():
     try:
         data = request.json
+        logger.info(data)
         
         if not data:
             return jsonify({"error": "No JSON data provided"}), 400
