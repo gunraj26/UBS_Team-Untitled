@@ -260,19 +260,3 @@ def micro_mouse():
         error_details = traceback.format_exc()
         print(f"Error in micro_mouse endpoint: {error_details}")
         return jsonify({'error': f'Internal server error: {str(e)}'}), 500
-
-# Health check endpoint for debugging
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint to verify the API is working."""
-    return jsonify({
-        'status': 'OK',
-        'service': 'Micromouse API',
-        'controller_initialized': controller is not None,
-        'controller_type': type(controller).__name__ if controller else None
-    })
-
-print("Micromouse API initialized with ExampleController")
-print("Available endpoints:")
-print("  GET /health - Health check and status")
-print("  POST /micro-mouse - Main micromouse endpoint")
