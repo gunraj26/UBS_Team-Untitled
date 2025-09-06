@@ -27,10 +27,34 @@ def roman_to_int(s):
     return num
 
 # English number parsing (simple demo; could be replaced by library like `word2number`)
-from word2number import w2n
+ENGLISH_NUMS = {
+    "zero": 0, "one": 1, "two": 2, "three": 3, "four": 4,
+    "five": 5, "six": 6, "seven": 7, "eight": 8, "nine": 9,
+    "ten": 10, "eleven": 11, "twelve": 12, "thirteen": 13,
+    "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+    "eighteen": 18, "nineteen": 19, "twenty": 20,
+    "thirty": 30, "forty": 40, "fifty": 50,
+    "sixty": 60, "seventy": 70, "eighty": 80, "ninety": 90,
+    "hundred": 100, "thousand": 1000
+}
 
 def english_to_int(s):
-    return w2n.word_to_num(s)
+    words = s.lower().replace("-", " ").split()
+    total, current = 0, 0
+    for w in words:
+        if w not in ENGLISH_NUMS:
+            raise ValueError(f"Unknown English number word: {w}")
+        val = ENGLISH_NUMS[w]
+        if val == 100:
+            current *= val
+        elif val == 1000:
+            current *= val
+            total += current
+            current = 0
+        else:
+            current += val
+    return total + current
+
 
 # German number parsing (placeholder: would need full parser or mapping)
 GERMAN_NUMS = {
