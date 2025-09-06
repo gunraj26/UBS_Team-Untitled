@@ -147,10 +147,13 @@ def princess_diaries():
     
     # Finalize: add return to start for chosen schedule
     best_score, fee_no_return, best_schedule = dp[-1]
+
     if best_schedule:
         best_fee = fee_no_return + dist_map[best_schedule[-1]["station"]][start_station]
+        best_names = [t["name"] for t in sorted(best_schedule, key=lambda x: x["start"])]
     else:
         best_fee = 0
+        best_names = []
 
 
     result = {
