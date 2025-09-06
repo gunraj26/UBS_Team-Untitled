@@ -133,22 +133,27 @@ def mst_calculation():
     for idx, case in enumerate(cases):
         img_b64 = (case or {}).get("image", "") or ""
         if not img_b64:
-            logging.warning(f"Case {idx}: missing image")
+            logger.warning(f"Case {idx}: missing image")
             results.append({"value": 0})
             continue
+
+        # ✅ Log the raw base64 string
+        logger.info(f"Case {idx}: received base64 image (length={len(img_b64)})")
+        logger.debug(f"Case {idx}: base64 string = {img_b64}")
 
         try:
             parsed = call_openai_extract(img_b64)
             num_nodes = parsed["nodes"]
             edges = parsed["edges"]
-            logging.info(f"Case {idx}: nodes={num_nodes}, edges={len(edges)}")
+            logger.info(f"Case {idx}: nodes={num_nodes}, edges={len(edges)}")
             value = kruskal_mst(num_nodes, edges)
         except Exception as e:
-            logging.error(f"Case {idx}: vision parse failed: {e}")
+            logger.error(f"Case {idx}: vision parse failed: {e}")
             value = 0
 
         results.append({"value": int(value)})
 
     return jsonify(results)
+
 
 
