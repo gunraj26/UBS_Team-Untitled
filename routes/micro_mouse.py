@@ -125,10 +125,13 @@ def micro_mouse():
             # speed (m=0 → m=0) and is safer than accelerating.
             instructions.append("F1")
         else:
-            # Path ahead is blocked: rotate 45° to the right.  We rely on
-            # repeated requests to continue rotating until a free path
-            # appears.  In‑place rotation requires zero momentum.
-            instructions.append("R")
+            # Path ahead is blocked.  Do not attempt to rotate with
+            # non‑zero momentum.  Instead, issue a brake command even
+            # when already at rest.  A brake at momentum 0 (BB at m=0)
+            # simply consumes time (200 ms) without changing state.  This
+            # conservative approach avoids illegal rotations while
+            # preventing forward motion into a wall.
+            instructions.append("BB")
 
     # Construct the response.  The 'end' flag remains false because this
     # controller is designed to continue operating until an external
