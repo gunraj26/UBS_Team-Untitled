@@ -12,9 +12,9 @@ import routes.trading_bot
 # # --- register blueprints ---
 # app.register_blueprint(trading_formula_bp)    
 
-from .trading_bot import bp as trading_bot_bp  # noqa: F401
+# from .trading_bot import bp as trading_bot_bp  # noqa: F401
 
-__all__ = ["trading_bot_bp"]          
+# __all__ = ["trading_bot_bp"]          
 
 
 from routes.ink_archive import bp as ink_archive_bp
