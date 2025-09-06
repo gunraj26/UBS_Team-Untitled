@@ -10,13 +10,12 @@ import math
 # Add parent directory to path to allow importing routes module
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-# Only import and register routes when not running directly
-if __name__ != "__main__":
-    from routes import app
-else:
-    # When running directly, create a new Flask app
-    from flask import Flask
-    app = Flask(__name__)
+import json
+import logging
+
+from flask import request
+
+from routes import app
 
 logger = logging.getLogger(__name__)
 
