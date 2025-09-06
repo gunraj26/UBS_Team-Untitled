@@ -228,461 +228,451 @@
 from flask import Flask, request, jsonify
 import math
 import re
-from statistics import mean
+from statistics import mean, pstdev
 
 from routes import app
-
-# -------------------- Config --------------------
-BLOCKLIST_IDS = {7}  # known tricky promo / decoy
+# =========================
+# Tunables / heuristics
+# =========================
 RISK_EPS = 1e-12
+MAX_RANGE_GLITCH_PCT = 0.18     # if 1m range > 18% of price, treat as bad tick
+CIRCUIT_MEGA_GAP = 0.035        # >3.5% open gap → reversion bias
+IMPULSE_STRONG = 0.0045         # ~0.45% close-vs-last-prev
+BODY_STRONG = 0.58
+VOLUME_SPIKE_HOT = 4.0          # avg(v1..v3) / avg(prev_vol)
+WICK_TRAP = 0.36
+BOLL_Z_FADE = 2.1               # c1 close vs prev mean/std
+BOLL_Z_TREND = 1.0
+BREAK_HOLD_MIN = 0.0008         # 0.08% hold beyond prior range
+FOLLOW_THRU_OK = 0.0006
+FOLLOW_THRU_STRONG = 0.0015
+SLOPE_MIN = 0.0020
 
-AUTHORITATIVE = {
-    "BLOOMBERG", "REUTERS", "WALL STREET JOURNAL", "WSJ",
-    "FINANCIAL TIMES", "FT", "NIKKEI", "AP", "AXIOS",
-    "BARRON", "BARRONS", "CNBC", "GUARDIAN"
-}
-CRYPTO_TIER2 = {"COINDESK", "THE BLOCK", "COINTELEGRAPH", "DECRYPT"}
-
-ALLOWED_TWITTER = {
-    "tier10k", "WuBlockchain", "CoinDesk", "TheBlock__", "Reuters",
-    "AP", "Bloomberg", "CNBC", "MarketWatch", "FT", "WSJ"
-}
+# Known junk / traps you’ve seen; keep empty if unsure
+BLOCKLIST_IDS = set()
 
 PROMO_WORDS = {
-    "airdrop", "points", "quest", "campaign", "referral", "bonus",
-    "mint", "whitelist", "allowlist", "giveaway", "xp",
-    "pool party", "poolparty", "season", "season 2", "season2",
-    "farm", "farming", "stake to earn", "rewards", "party",
-    "join us", "utility incoming", "listing soon", "perp points"
+    "airdrop","points","quest","campaign","referral","bonus","mint","whitelist",
+    "allowlist","giveaway","xp","season","farm","farming","stake to earn","rewards",
+    "party","pool party","poolparty","listing soon","perp points"
 }
 PROMO_RE = re.compile("|".join(re.escape(k) for k in PROMO_WORDS), re.IGNORECASE)
 
-# headline tilt (light touch; affects regime, not direction directly)
+LOW_CRED_TERMS = {"rumor","unconfirmed","parody","fake","shitpost","spoof","satire","april fools"}
+
+AUTHORITATIVE = {
+    "BLOOMBERG","REUTERS","WALL STREET JOURNAL","WSJ","FINANCIAL TIMES","FT",
+    "NIKKEI","AP","AXIOS","BARRON","BARRONS","CNBC","GUARDIAN","MARKETWATCH"
+}
+CRYPTO_TIER2 = {"COINDESK","THE BLOCK","COINTELEGRAPH","DECRYPT"}
+ALLOWED_TWITTER = {"tier10k","WuBlockchain","CoinDesk","TheBlock__","Reuters","AP","Bloomberg","CNBC","MarketWatch","FT","WSJ"}
+
 GOOD_TERMS = {
-    "approve", "approves", "approved", "approval",
-    "etf", "inflow", "flows", "treasury", "reserve", "reserves",
-    "executive order", "legalize", "legalizes", "adopt", "adopts",
-    "integrate", "integrates", "support", "adds support",
-    "partnership", "upgrade", "merge", "launch", "launches",
-    "institutional", "blackrock", "fidelity", "google", "amazon",
-    "microsoft", "visa", "mastercard", "paypal", "stripe"
+    "approve","approves","approved","approval","etf","inflow","flows","treasury",
+    "reserve","reserves","executive order","legalize","legalizes","adopt","adopts",
+    "integrate","integrates","support","adds support","partnership","upgrade","merge",
+    "launch","launches","institutional","blackrock","fidelity","google","amazon",
+    "microsoft","visa","mastercard","paypal","stripe"
 }
 BAD_TERMS = {
-    "hack", "hacked", "exploit", "breach", "rug", "scam", "fraud", "attack",
-    "ban", "bans", "restrict", "restricts", "halts", "halt", "suspends",
-    "withdrawals", "insolvent", "insolvency", "bankrupt", "bankruptcy",
-    "lawsuit", "sue", "sues", "charged", "indicted", "sanction", "sanctions",
-    "reject", "rejected", "rejects", "delay", "delays", "postpone", "postpones",
-    "outage", "downtime"
+    "hack","hacked","exploit","breach","rug","scam","fraud","attack","ban","bans",
+    "restrict","restricts","halts","halt","suspends","withdrawals","insolvent",
+    "insolvency","bankrupt","bankruptcy","lawsuit","sue","sues","charged","indicted",
+    "sanction","sanctions","reject","rejected","rejects","delay","delays","postpone",
+    "postpones","outage","downtime"
 }
 
-# -------------------- Utilities --------------------
 def safe_float(x):
     try:
-        if x is None:
-            return None
         v = float(x)
-        if math.isnan(v) or math.isinf(v):
+        if not math.isfinite(v):
             return None
         return v
     except Exception:
         return None
 
-def is_promotional(title: str) -> bool:
-    if not title:
-        return False
-    return PROMO_RE.search(title) is not None
-
-def source_weights(title: str, source: str) -> float:
-    t_up = (title or "").upper()
-    s_up = (source or "").upper()
-    w = 1.0
-    # source brand
-    if s_up in AUTHORITATIVE:
-        w += 0.45
-    elif s_up in CRYPTO_TIER2:
-        w += 0.25
-    # title mentions reputable outlet (sometimes included by syndication bots)
-    if any(b in t_up for b in AUTHORITATIVE):
-        w += 0.30
-    if any(b in t_up for b in CRYPTO_TIER2):
-        w += 0.15
-    # twitter handle credibility
-    if (source or "").lower() == "twitter":
-        for h in ALLOWED_TWITTER:
-            if h.lower() in (title or "").lower():
-                w += 0.20
-                break
-        else:
-            w -= 0.25  # unknown handle penalty
-    return max(0.2, w)
-
-def headline_tilt(title: str) -> float:
-    """Positive for good news, negative for bad news. Small magnitude (±0.25)."""
-    if not title:
-        return 0.0
-    t = title.lower()
-    pos = any(k in t for k in GOOD_TERMS)
-    neg = any(k in t for k in BAD_TERMS)
-    if pos and not neg:
-        return 0.20
-    if neg and not pos:
-        return -0.20
-    return 0.0
-
-def sorted_unique_by_id(items):
-    seen = set()
-    out = []
-    for it in items:
-        iid = it.get("id")
-        if iid is None or iid in seen:
-            continue
-        seen.add(iid)
-        out.append(it)
-    return out
-
-# -------------------- Candle helpers --------------------
 def sort_by_timestamp(candles):
-    # robust: fall back to 'datetime' str if timestamp missing
     def key(c):
         ts = c.get("timestamp")
         if ts is not None:
             return int(ts)
-        dt = c.get("datetime")
-        return dt or ""  # lexicographic; still stable
-    return sorted(candles, key=key)
+        return c.get("datetime") or ""
+    return sorted(candles or [], key=key)
 
-def clean_obs_candles(item):
-    obs = item.get("observation_candles") or []
-    if not obs:
-        return []
-    obs = sort_by_timestamp(obs)
-    clean = []
-    for c in obs[:3]:  # we ever only use first three
-        o = safe_float(c.get("open"))
-        h = safe_float(c.get("high"))
-        l = safe_float(c.get("low"))
-        cl = safe_float(c.get("close"))
-        v = safe_float(c.get("volume")) or 0.0
-        if None in (o, h, l, cl):
-            continue
-        if h < l:
-            continue
-        if min(o, h, l, cl) <= 0:
-            continue
-        clean.append({"open": o, "high": h, "low": l, "close": cl, "volume": v})
-    return clean
+def clean_candle(c):
+    o = safe_float(c.get("open"))
+    h = safe_float(c.get("high"))
+    l = safe_float(c.get("low"))
+    cl = safe_float(c.get("close"))
+    v = safe_float(c.get("volume")) or 0.0
+    if None in (o,h,l,cl) or min(o,h,l,cl) <= 0 or h < l:
+        return None
+    return {"open":o,"high":h,"low":l,"close":cl,"volume":v}
+
+def clean_obs(item):
+    obs = sort_by_timestamp(item.get("observation_candles"))
+    out = []
+    for c in obs[:3]:
+        cc = clean_candle(c)
+        if cc: out.append(cc)
+    return out
+
+def prev_candles(item, k=12):
+    pcs = sort_by_timestamp(item.get("previous_candles"))
+    out = []
+    for c in pcs[-k:]:
+        cc = clean_candle(c)
+        if cc: out.append(cc)
+    return out
 
 def last_prev_close(item):
-    pcs = item.get("previous_candles") or []
-    if not pcs:
-        return None
-    pcs = sort_by_timestamp(pcs)
-    cl = safe_float(pcs[-1].get("close"))
-    return cl
+    pcs = prev_candles(item, k=1)
+    return pcs[-1]["close"] if pcs else None
 
-def prev_closes(item, k=8):
-    pcs = item.get("previous_candles") or []
-    if not pcs:
-        return []
-    pcs = sort_by_timestamp(pcs)
-    closes = []
-    for c in pcs[-k:]:
-        v = safe_float(c.get("close"))
-        if v is not None and v > 0:
-            closes.append(v)
-    return closes
+def prev_closes(item, k=12):
+    pcs = prev_candles(item, k=k)
+    return [c["close"] for c in pcs]
 
-def prev_avg_volume(item, k=3):
-    pcs = item.get("previous_candles") or []
-    if not pcs:
-        return None
-    pcs = sort_by_timestamp(pcs)
-    vols = []
-    for c in pcs[-k:]:
-        v = safe_float(c.get("volume"))
-        if v is not None and v >= 0:
-            vols.append(v)
-    if not vols:
-        return None
-    return max(RISK_EPS, sum(vols)/len(vols))
+def prev_hilo(item, k=12):
+    pcs = prev_candles(item, k=k)
+    if not pcs: return None, None
+    hi = max(p["high"] for p in pcs)
+    lo = min(p["low"] for p in pcs)
+    return hi, lo
 
-def candle_shape_feats(c):
-    o, h, l, cl = c["open"], c["high"], c["low"], c["close"]
-    rng = max(RISK_EPS, h - l)
-    body = abs(cl - o)
-    upper = h - max(o, cl)
-    lower = min(o, cl) - l
-    body_ratio = min(1.0, body / rng)
-    upper_ratio = max(0.0, upper / rng)
-    lower_ratio = max(0.0, lower / rng)
-    return body_ratio, upper_ratio, lower_ratio, rng
+def avg_prev_volume(item, k=3):
+    pcs = prev_candles(item, k=k)
+    if not pcs: return None
+    vols = [max(0.0, p["volume"]) for p in pcs]
+    return max(RISK_EPS, sum(vols)/len(vols)) if vols else None
 
-def slope_sign(x):
-    """Simple 1D slope sign using last minus first to avoid overfitting."""
-    if len(x) < 2:
-        return 0.0
-    return (x[-1] - x[0]) / max(RISK_EPS, x[0])
+def ema(seq, span):
+    if not seq: return None
+    k = 2/(span+1)
+    e = seq[0]
+    for x in seq[1:]:
+        e = x*k + e*(1-k)
+    return e
 
-# -------------------- Core decision logic --------------------
-def regime_and_decision(lp_close, oc, avg_prev_vol, title, source):
-    """
-    Decide LONG/SHORT & confidence based on:
-      - impulse & gap vs last prev close
-      - candle-1 body/wick, range expansion
-      - follow-through (c2/c3)
-      - volume spike (c1..c3) vs prev avg
-      - micro-trend slope from previous closes
-      - source credibility + headline tilt
-    """
-    if not oc or not lp_close or lp_close <= 0:
+def slope_sign(closes):
+    if len(closes) < 2: return 0.0
+    return (closes[-1] - closes[0]) / max(RISK_EPS, closes[0])
+
+def candle_shape(c):
+    o,h,l,cl = c["open"],c["high"],c["low"],c["close"]
+    rng = max(RISK_EPS, h-l)
+    body = abs(cl-o)
+    upper = h - max(o,cl)
+    lower = min(o,cl) - l
+    return (min(1.0, body/rng),
+            max(0.0, upper/rng),
+            max(0.0, lower/rng),
+            rng)
+
+def source_weight(title, source):
+    t_up = (title or "").upper()
+    s_up = (source or "").upper()
+    w = 1.0
+    if s_up in AUTHORITATIVE: w += 0.50
+    elif s_up in CRYPTO_TIER2: w += 0.30
+    if any(b in t_up for b in AUTHORITATIVE): w += 0.25
+    if any(b in t_up for b in CRYPTO_TIER2): w += 0.15
+    if (source or "").lower() == "twitter":
+        low = (title or "").lower()
+        if any(h.lower() in low for h in ALLOWED_TWITTER): w += 0.20
+        else: w -= 0.25
+    if any(wd in (title or "").lower() for wd in LOW_CRED_TERMS): w -= 0.30
+    return max(0.2, w)
+
+def title_tilt(title):
+    if not title: return 0.0
+    t = title.lower()
+    pos = any(k in t for k in GOOD_TERMS)
+    neg = any(k in t for k in BAD_TERMS)
+    if pos and not neg: return 0.25
+    if neg and not pos: return -0.25
+    return 0.0
+
+def is_promotional(title):
+    if not title: return False
+    return PROMO_RE.search(title) is not None
+
+def zscore(x, mu, sd):
+    if sd is None or sd < RISK_EPS: return 0.0
+    return (x-mu)/sd
+
+# ========= Experts =========
+def expert_momentum_shock(lp, c1, c2, c3, prev_vol_avg):
+    o1,h1,l1,cl1,v1 = c1["open"],c1["high"],c1["low"],c1["close"],c1["volume"]
+    imp = (cl1 - lp)/lp
+    body, up, lo, rng1 = candle_shape(c1)
+    gap = (o1 - lp)/lp
+    ft2 = (c2["close"]-cl1)/cl1 if c2 else 0.0
+    ft3 = (c3["close"]-cl1)/cl1 if c3 else 0.0
+    v2 = (c2["volume"] if c2 else 0.0) or 0.0
+    v3 = (c3["volume"] if c3 else 0.0) or 0.0
+    spike = ((v1+v2+v3)/3)/max(RISK_EPS, prev_vol_avg or 1.0)
+
+    score = 0.0
+    if abs(imp) >= IMPULSE_STRONG: score += 1.0
+    if body >= BODY_STRONG: score += 0.9
+    if spike >= VOLUME_SPIKE_HOT: score += 0.7
+    if ft2*imp > 0: score += 0.5
+    if ft3*imp > 0: score += 0.4
+    if abs(gap) <= 0.012: score += 0.2      # moderate gaps trend better
+    if abs(gap) > 0.02: score -= 0.4        # too big often mean-reverts 30m
+    if (h1-l1)/lp > 0.022: score -= 0.3     # 1m explosion → fade risk
+
+    direction = "LONG" if imp > 0 else "SHORT"
+    confidence = max(0.0, score)
+    return direction, confidence
+
+def expert_exhaustion_fade(lp, c1, c2, c3):
+    o1,h1,l1,cl1,_ = c1["open"],c1["high"],c1["low"],c1["close"],c1["volume"]
+    imp = (cl1 - lp)/lp
+    body, up, lo, rng1 = candle_shape(c1)
+    gap = (o1 - lp)/lp
+    ft2 = (c2["close"]-cl1)/cl1 if c2 else 0.0
+    ft3 = (c3["close"]-cl1)/cl1 if c3 else 0.0
+
+    score = 0.0
+    if abs(gap) > CIRCUIT_MEGA_GAP: score += 1.2
+    if (h1-l1)/lp > 0.02: score += 0.8
+    if imp > 0 and up >= WICK_TRAP: score += 0.8
+    if imp < 0 and lo >= WICK_TRAP: score += 0.8
+    if ft2*imp < 0: score += 0.7
+    if ft3*imp < 0: score += 0.5
+    if body < 0.28 and abs(imp) >= IMPULSE_STRONG: score += 0.4
+
+    direction = "SHORT" if imp > 0 else "LONG"
+    confidence = max(0.0, score)
+    return direction, confidence
+
+def expert_breakout(prev_hi, prev_lo, c1, c2):
+    # Detect break & hold vs fakeout
+    cl1 = c1["close"]; o1 = c1["open"]; h1=c1["high"]; l1=c1["low"]
+    break_up = h1 > prev_hi * (1.0 + BREAK_HOLD_MIN)
+    break_dn = l1 < prev_lo * (1.0 - BREAK_HOLD_MIN)
+
+    hold_up = c2 and (c2["close"] > max(prev_hi, cl1*(1.0 - FOLLOW_THRU_OK)))
+    hold_dn = c2 and (c2["close"] < min(prev_lo, cl1*(1.0 + FOLLOW_THRU_OK)))
+
+    strong_up = c2 and (c2["close"] - cl1)/cl1 > FOLLOW_THRU_STRONG
+    strong_dn = c2 and (cl1 - c2["close"])/cl1 > FOLLOW_THRU_STRONG
+
+    # Score logic
+    if break_up and (hold_up or strong_up):
+        return "LONG", 0.9
+    if break_dn and (hold_dn or strong_dn):
+        return "SHORT", 0.9
+    # Fakeout → fade
+    if break_up and c2 and c2["close"] < prev_hi:
+        return "SHORT", 0.8
+    if break_dn and c2 and c2["close"] > prev_lo:
+        return "LONG", 0.8
+    return None, 0.0
+
+def expert_bollinger(prev_cl, c1, c2):
+    if len(prev_cl) < 6:
         return None, 0.0
+    mu = mean(prev_cl)
+    sd = pstdev(prev_cl) if len(prev_cl) > 1 else 0.0
+    z1 = zscore(c1["close"], mu, sd)
+    # Use c2 to assess follow-through back toward band
+    rev = c2 and ((c2["close"] - c1["close"])/max(RISK_EPS, c1["close"]))
+    # Strong z with no follow-through tends to mean revert over 30m
+    if abs(z1) >= BOLL_Z_FADE and (rev is None or abs(rev) < 0.001):
+        # Fade extreme
+        return ("SHORT" if z1 > 0 else "LONG"), 0.8
+    # Moderate z with positive follow-through → trend
+    if abs(z1) >= BOLL_Z_TREND and rev and abs(rev) >= 0.001:
+        return ("LONG" if z1 > 0 else "SHORT"), 0.6
+    return None, 0.0
 
-    c1 = oc[0]
-    c2 = oc[1] if len(oc) > 1 else None
-    c3 = oc[2] if len(oc) > 2 else None
-
-    o1, h1, l1, cl1, v1 = c1["open"], c1["high"], c1["low"], c1["close"], c1["volume"]
-    ft2 = (c2["close"] - cl1) / max(RISK_EPS, cl1) if c2 else None
-    ft3 = (c3["close"] - cl1) / max(RISK_EPS, cl1) if c3 else None
-
-    impulse = (cl1 - lp_close) / lp_close
-    gap = (o1 - lp_close) / lp_close
-    abs_imp = abs(impulse)
-
-    body_ratio, upper_wick, lower_wick, rng1 = candle_shape_feats(c1)
-    range_exp = (h1 - l1) / max(RISK_EPS, lp_close)
-
-    # volume spike: include first 3 minutes, not just c1
-    if avg_prev_vol and avg_prev_vol > 0:
-        v2 = (c2["volume"] if c2 else 0.0) or 0.0
-        v3 = (c3["volume"] if c3 else 0.0) or 0.0
-        spike = (v1 + v2 + v3) / (3.0 * max(RISK_EPS, avg_prev_vol))
+def expert_microtrend(prev_cl, lp, c1):
+    if len(prev_cl) < 5:
+        return None, 0.0
+    e5 = ema(prev_cl, 5); e12 = ema(prev_cl, 12) if len(prev_cl) >= 12 else ema(prev_cl, max(3,len(prev_cl)-1))
+    slope = (e5 - e12)/max(RISK_EPS, e12 or lp)
+    if abs(slope) < SLOPE_MIN:
+        return None, 0.0
+    imp = (c1["close"] - lp)/lp
+    # if impulse aligns with slope → trend, else reversion (micro regime mismatch)
+    if slope * imp > 0:
+        return ("LONG" if slope > 0 else "SHORT"), 0.55
     else:
-        spike = 1.0
+        return ("SHORT" if slope > 0 else "LONG"), 0.45
 
-    w_src = source_weights(title, source)
-    tilt = headline_tilt(title)
+def vote_and_decide(item):
+    title = item.get("title") or ""
+    source = item.get("source") or ""
+    lp = last_prev_close(item)
+    if not lp or lp <= 0: return None
 
-    # micro-trend slope (prior 6-8 closes)
-    # lightweight: later in selection we use this for tie-break too
-    # we pass it in via return? keep local as a score booster
-    # We'll add to momentum if aligned with impulse
-    # The selector recomputes slope anyway; here we just affect regime.
-    # (To avoid recompute twice, it's okay — it's cheap.)
-    # We’ll re-fetch closes quickly here:
-    # NOTE: we won't pass item; selection already computed slope separately.
-    micro_slope = 0.0  # left neutral; selection computes separately
+    obs = clean_obs(item)
+    if not obs: return None
+    # data glitch guard
+    if (obs[0]["high"] - obs[0]["low"]) / lp > MAX_RANGE_GLITCH_PCT:
+        return None
 
-    # --- Regime scoring ---
-    momentum_score = 0.0
-    reversion_score = 0.0
+    c1 = obs[0]
+    c2 = obs[1] if len(obs) > 1 else None
+    c3 = obs[2] if len(obs) > 2 else None
 
-    # Base impulse & body
-    if abs_imp >= 0.0045:
-        momentum_score += 0.7
-    if body_ratio >= 0.55:
-        momentum_score += 0.35
+    prev_hi, prev_lo = prev_hilo(item, k=12)
+    prev_cl = prev_closes(item, k=12)
+    pv_avg = avg_prev_volume(item, k=3)
 
-    # Volume & follow-through
-    if spike >= 3.0:
-        momentum_score += 0.30
-    if spike >= 6.0:
-        reversion_score += 0.25  # blowoff risk
-    if ft2 is not None and (ft2 * impulse > 0):
-        momentum_score += 0.25
-    if ft3 is not None and (ft3 * impulse > 0):
-        momentum_score += 0.15
-    if ft2 is not None and (ft2 * impulse < 0):
-        reversion_score += 0.35
-    if ft3 is not None and (ft3 * impulse < 0):
-        reversion_score += 0.25
+    # Per-expert suggestions
+    votes = []
 
-    # Gap & range expansion
-    if abs(gap) > 0.0005 and abs(gap) <= 0.008:
-        momentum_score += 0.10
-    if abs(gap) > 0.015:
-        reversion_score += 0.20
-    if range_exp > 0.02:  # >2% 1m range often exhaustion on BTC
-        reversion_score += 0.20
+    d, s = expert_momentum_shock(lp, c1, c2, c3, pv_avg); votes.append((d,s,"mom"))
+    d, s = expert_exhaustion_fade(lp, c1, c2, c3); votes.append((d,s,"fade"))
+    if prev_hi and prev_lo:
+        d, s = expert_breakout(prev_hi, prev_lo, c1, c2); votes.append((d,s,"brk"))
+    d, s = expert_bollinger(prev_cl, c1, c2); votes.append((d,s,"boll"))
+    d, s = expert_microtrend(prev_cl, lp, c1); votes.append((d,s,"micro"))
 
-    # Wick traps
-    if impulse > 0 and upper_wick >= 0.35:
-        reversion_score += 0.35
-    if impulse < 0 and lower_wick >= 0.35:
-        reversion_score += 0.35
-    if body_ratio < 0.25 and abs_imp >= 0.0045:
-        reversion_score += 0.20  # doji after impulse → hesitancy
+    # Headline/source adjustments (small)
+    w_src = source_weight(title, source)
+    tilt = title_tilt(title)
+    promo_pen = 0.85 if is_promotional(title) else 1.0
 
-    # Credibility & headline tilt
-    momentum_score *= w_src * (1.0 + max(0.0, tilt))  # good news → more momentum
-    reversion_score *= (1.0 + max(0.0, -tilt))        # bad news → more fade risk
+    # Combine votes
+    long_score = 0.0
+    short_score = 0.0
+    for d, s, tag in votes:
+        if not d: continue
+        # weight by expert confidence; momentum & breakout get a slight boost
+        w = s
+        if tag in ("mom","brk"): w *= 1.10
+        if d == "LONG": long_score += w
+        else: short_score += w
 
-    # Base confidence
-    base_conf = (
-        min(1.5, abs_imp * 120) +           # bigger impulse → higher conf
-        min(1.3, spike / 4.5) +             # spike 6x → ~+1.3
-        max(0.0, (body_ratio - 0.4) * 1.2)  # strong body helps
-    )
+    # credibility and tilt
+    long_score *= (w_src * (1.0 + max(0.0, tilt)))
+    short_score *= (w_src * (1.0 + max(0.0, -tilt)))
+    long_score *= promo_pen; short_score *= promo_pen
 
-    # Decide regime
-    if momentum_score >= reversion_score + 0.15:
-        decision = "LONG" if impulse > 0 else "SHORT"
-        conf = base_conf * (1.05 + (momentum_score - reversion_score))
-    elif reversion_score >= momentum_score + 0.15:
-        decision = "SHORT" if impulse > 0 else "LONG"
-        conf = base_conf * (1.00 + (reversion_score - momentum_score))
-    else:
-        # slight bias to mean-reversion intraday on ties
-        decision = "SHORT" if impulse > 0 else "LONG"
-        conf = base_conf * 0.85
+    # Mega-gap circuit: force reversion bias
+    gap = (c1["open"] - lp)/lp
+    if abs(gap) > CIRCUIT_MEGA_GAP:
+        if gap > 0: short_score *= 1.15
+        else: long_score *= 1.15
 
-    # Penalize promotions
-    if is_promotional(title or ""):
-        conf *= 0.75
+    # If scores are too close, bias to reversion (intraday BTC often mean-reverts over 30m after spikes)
+    if abs(long_score - short_score) < 0.15:
+        imp = (c1["close"] - lp)/lp
+        if imp > 0: short_score += 0.12
+        else: long_score += 0.12
 
-    # Extreme gap circuit breaker: >3% often mean-reverts over 30m
-    if abs(gap) > 0.03:
-        decision = "SHORT" if impulse > 0 else "LONG"
-        conf *= 1.05
+    decision = "LONG" if long_score >= short_score else "SHORT"
+    conf_gap = abs(long_score - short_score)
 
-    return decision, max(0.0, float(conf))
+    # Secondary ranking metrics
+    impulse = abs((c1["close"] - lp)/lp)
+    v1 = c1["volume"] or 0.0
+    v2 = (c2["volume"] if c2 else 0.0) or 0.0
+    v3 = (c3["volume"] if c3 else 0.0) or 0.0
+    spike = ((v1+v2+v3)/3)/max(RISK_EPS, pv_avg or 1.0)
+    micro_abs = abs(slope_sign(prev_cl)) if prev_cl else 0.0
 
-# -------------------- Selection --------------------
-def choose_top_50(items):
-    # Pre-clean & compute features
-    candlist = []
+    quality_gate = impulse >= 0.0012 and spike >= 1.2  # relaxed but non-trivial
+
+    return {
+        "id": item.get("id"),
+        "decision": decision,
+        "conf": float(max(0.0, conf_gap)),
+        "impulse": float(impulse),
+        "spike": float(spike),
+        "micro": float(micro_abs),
+        "time": item.get("time", 0),
+        "promo": bool(is_promotional(title)),
+        "quality": bool(quality_gate)
+    }
+
+def dedupe_keep_first(items):
+    seen = set()
+    out = []
     for it in items:
         iid = it.get("id")
-        if iid is None or iid in BLOCKLIST_IDS:
-            continue
+        if iid is None or iid in seen: continue
+        seen.add(iid); out.append(it)
+    return out
 
-        lp = last_prev_close(it)
-        obs = clean_obs_candles(it)
-        if not lp or not obs:
-            continue
+def choose_exactly_50(raw_items):
+    # Build scored list
+    scored = []
+    for it in raw_items:
+        if it.get("id") in BLOCKLIST_IDS: continue
+        s = vote_and_decide(it)
+        if s and s["id"] is not None:
+            scored.append(s)
 
-        # sanity: discard absurd ranges (>15% minute range) as likely data glitch
-        if (obs[0]["high"] - obs[0]["low"]) / max(RISK_EPS, lp) > 0.15:
-            continue
+    scored = dedupe_keep_first(scored)
 
-        avg_vol = prev_avg_volume(it, k=3)
-        title = it.get("title") or ""
-        source = it.get("source") or ""
-
-        # decision
-        dec, conf = regime_and_decision(lp, obs, avg_vol, title, source)
-        if dec is None:
-            continue
-
-        # tie-break metrics
-        first_close = obs[0]["close"]
-        first_vol = obs[0]["volume"] or 0.0
-        impulse = abs((first_close - lp) / lp)
-        time_val = it.get("time", 0)
-
-        # micro-trend slope from previous closes
-        closes = prev_closes(it, k=8)
-        micro = abs(slope_sign(closes)) if closes else 0.0
-
-        # minimal quality gate (relaxed later if we need backfill)
-        quality = impulse >= 0.0015 and first_vol is not None
-
-        candlist.append({
-            "id": iid,
-            "decision": dec,
-            "confidence": conf,
-            "impulse": impulse,
-            "first_vol": first_vol,
-            "micro": micro,
-            "time": time_val,
-            "title": title,
-            "quality": quality
-        })
-
-    candlist = sorted_unique_by_id(candlist)
-
-    # filter out aggressively promotional titles up front from primary pool
-    primary = [c for c in candlist if c["quality"] and not is_promotional(c["title"])]
-    primary.sort(
-        key=lambda x: (
-            x["confidence"], x["impulse"], x["micro"], x["first_vol"], x["time"], x["id"]
-        ),
-        reverse=True
-    )
-
+    # Primary: strong quality and not obvious promo
+    primary = [x for x in scored if x["quality"] and not x["promo"]]
+    # Rank by confidence, impulse, spike, micro, time (newer), id
+    primary.sort(key=lambda x: (x["conf"], x["impulse"], x["spike"], x["micro"], x["time"], x["id"]), reverse=True)
     picks = primary[:50]
 
-    # Backfill if needed: allow promos and below-threshold impulses, still ranked
+    # Backfill 1: include promos / weaker but still decent
     if len(picks) < 50:
         need = 50 - len(picks)
         chosen = {p["id"] for p in picks}
-        rest = [c for c in candlist if c["id"] not in chosen]
-        rest.sort(
-            key=lambda x: (
-                x["confidence"], x["impulse"], x["micro"], x["first_vol"], x["time"], x["id"]
-            ),
-            reverse=True
-        )
+        rest = [x for x in scored if x["id"] not in chosen]
+        rest.sort(key=lambda x: (x["conf"], x["impulse"], x["spike"], x["micro"], x["time"], x["id"]), reverse=True)
         picks.extend(rest[:need])
 
-    # Safety backfill (rare): contrarian on remaining valid events
+    # Backfill 2: if still short, flip to simple impulse-fade as safety net
     if len(picks) < 50:
         need = 50 - len(picks)
         chosen = {p["id"] for p in picks}
-        leftovers = []
-        for it in items:
+        safes = []
+        for it in raw_items:
             iid = it.get("id")
-            if iid is None or iid in chosen or iid in BLOCKLIST_IDS:
-                continue
-            lp = last_prev_close(it)
-            obs = clean_obs_candles(it)
-            if not lp or not obs:
-                continue
-            fc = obs[0]["close"]
-            imp = (fc - lp) / lp
-            leftovers.append({
+            if iid in chosen or iid in BLOCKLIST_IDS: continue
+            lp = last_prev_close(it); obs = clean_obs(it)
+            if not lp or not obs: continue
+            c1 = obs[0]
+            imp = (c1["close"] - lp)/lp
+            safes.append({
                 "id": iid,
-                "decision": ("SHORT" if imp > 0 else "LONG"),
-                "confidence": 0.05 + min(0.30, abs(imp) * 60),
+                "decision": "SHORT" if imp > 0 else "LONG",
+                "conf": 0.05 + min(0.3, abs(imp)*60),
                 "impulse": abs(imp),
-                "first_vol": obs[0]["volume"] or 0.0,
+                "spike": 0.0,
                 "micro": 0.0,
                 "time": it.get("time", 0)
             })
-        leftovers.sort(
-            key=lambda x: (
-                x["confidence"], x["impulse"], x["first_vol"], x["time"], x["id"]
-            ),
-            reverse=True
-        )
-        for lf in leftovers:
-            picks.append(lf)
-            if len(picks) == 50:
-                break
+        safes.sort(key=lambda x:(x["conf"],x["impulse"],x["time"],x["id"]), reverse=True)
+        picks.extend(safes[:need])
 
+    # Final trim
     picks = picks[:50]
     return [{"id": p["id"], "decision": p["decision"]} for p in picks]
 
-# -------------------- API --------------------
+# =========================
+# API
+# =========================
 @app.route("/trading-bot", methods=["POST"])
 def trading_bot():
     try:
         data = request.get_json(force=True, silent=False)
         if not isinstance(data, list):
-            return jsonify({"error": "Input must be a JSON array of news items"}), 400
+            return jsonify({"error":"Input must be a JSON array"}), 400
+        if not data:
+            return jsonify([]), 200
 
-        # Always return exactly 50 (challenge requirement). If <50 inputs, return as many as we can.
-        target_n = 50
-
-        picks = choose_top_50(data)
-        if len(picks) < target_n:
-            # If the dataset itself has <50 valid items, we just return what we have.
-            # Evaluator typically sends 1000, so this branch is rarely used.
-            picks = picks[:len(picks)]
-        else:
-            picks = picks[:target_n]
-
-        return jsonify(picks), 200
+        result = choose_exactly_50(data)
+        # If dataset is pathological and yields <50, still return whatever we have
+        return jsonify(result), 200
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+if __name__ == "__main__":
+    # pip install flask
+    # python app.py
+    # POST to http://localhost:8000/trading-bot
+    app.run(host="0.0.0.0", port=8000)
