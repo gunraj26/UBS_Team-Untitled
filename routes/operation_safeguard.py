@@ -581,17 +581,58 @@ def decrypt_keyword(text, keyword):
 @app.route('/operation-safeguard', methods=['POST'])
 def operation_safeguard():
     """
-    Expects JSON like:
+    Expects JSON in either format:
+    
+    Dictionary format:
     {
       "challenge_one": {...},
       "challenge_two": [[x1, y1], [x2, y2], ...],
-      "challenge_three": "log string"
+      "challenge_three": "log string",
+      "challenge_four": "encrypted message"
     }
+    
+    List format (in order):
+    [
+      challenge_one_data,
+      challenge_two_coordinates,
+      challenge_three_log_string,
+      challenge_four_encrypted_message
+    ]
     """
-    payload = request.get_json(force=True)
+    try:
+        payload = request.get_json(force=True)
+        
+        # Handle both dictionary and list payloads
+        if isinstance(payload, list):
+            # If payload is a list, treat it as challenge data in order
+            # Expected order: [challenge_one, challenge_two, challenge_three, challenge_four]
+            challenge_one_data = payload[0] if len(payload) > 0 else {}
+            challenge_two_data = payload[1] if len(payload) > 1 else []
+            challenge_three_data = payload[2] if len(payload) > 2 else ""
+            challenge_four_data = payload[3] if len(payload) > 3 else ""
+        elif isinstance(payload, dict):
+            # If payload is a dictionary, extract by keys
+            challenge_one_data = payload.get("challenge_one", {})
+            challenge_two_data = payload.get("challenge_two", [])
+            challenge_three_data = payload.get("challenge_three", "")
+            challenge_four_data = payload.get("challenge_four", "")
+        else:
+            return jsonify({
+                "error": "Invalid payload format",
+                "expected": "JSON object (dictionary) or array (list)",
+                "received": f"{type(payload).__name__}",
+                "received_value": payload
+            }), 400
+        
+    except Exception as e:
+        logger.error("Failed to parse JSON payload: %s", e)
+        return jsonify({
+            "error": "Failed to parse JSON payload",
+            "details": str(e)
+        }), 400
 
     # Challenge 1 - Reverse Obfuscation Analysis
-    challenge_one_data = payload.get("challenge_one", {})
+    challenge_one_data = challenge_one_data
     challenge_one_out = None
     
     if challenge_one_data and "transformations" in challenge_one_data and "transformed_encrypted_word" in challenge_one_data:
@@ -785,7 +826,7 @@ Respond with ONLY the decrypted text, no explanations.
             challenge_one_out = {"error": "Invalid challenge_one data format"}
 
     # Challenge 2 (coordinate analysis with enhanced pattern recognition)
-    coords = payload.get("challenge_two", [])
+    coords = challenge_two_data
     challenge_two_out = None
     if coords:
         # First try traditional coordinate analysis
@@ -858,7 +899,7 @@ Example response:
                 challenge_two_out = {"error": str(e)}
 
     # Challenge 3 - Operational Intelligence Extraction
-    log_string = payload.get("challenge_three", "")
+    log_string = challenge_three_data
     challenge_three_out = None
     
     if log_string:
@@ -1008,7 +1049,7 @@ Example response:
         challenge_three_out = {"error": "No challenge_three log string provided"}
 
     # Challenge 4 - Final Communication Decryption
-    challenge_four_data = payload.get("challenge_four", "")
+    challenge_four_data = challenge_four_data
     challenge_four_out = None
     
     if challenge_four_data:
@@ -1107,12 +1148,29 @@ Example response:
     else:
         challenge_four_out = {"error": "No challenge_four data provided"}
 
-    return jsonify({
+    # Prepare response
+    response = {
         "challenge_one": challenge_one_out,
         "challenge_two": challenge_two_out,
         "challenge_three": challenge_three_out,
         "challenge_four": challenge_four_out
-    })
+    }
+    
+    # Log the response for debugging
+    logger.info("Operation Safeguard response: %s", response)
+    
+    return jsonify(response)
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(e):
+    """Handle unexpected errors gracefully"""
+    logger.error("Unexpected error in operation-safeguard: %s", e, exc_info=True)
+    return jsonify({
+        "error": "Internal server error",
+        "message": "An unexpected error occurred while processing the request",
+        "details": str(e) if app.debug else "Contact support for assistance"
+    }), 500
 
 
 if __name__ == "__main__":
