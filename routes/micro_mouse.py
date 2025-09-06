@@ -95,44 +95,40 @@ def micro_mouse():
     # provide additional context for left‑ or right‑turning decisions but
     # are not strictly necessary here.
     try:
+        # Distances at various angles.  A positive value indicates free
+        # space; zero means the mouse is adjacent to a wall.  The
+        # ordering is [L90°, L45°, front, R45°, R90°].
+        l90 = sensor_data[0]
         l45 = sensor_data[1]
         front = sensor_data[2]
         r45 = sensor_data[3]
+        r90 = sensor_data[4]
     except (TypeError, IndexError):
-        # If sensor_data isn't a list of at least three elements,
-        # consider everything blocked to prompt a safe rotation.
-        l45 = front = r45 = 0
+        # If sensor_data isn't a list of length five, treat all
+        # directions as blocked to prompt a safe rotation.
+        l90 = l45 = front = r45 = r90 = 0
 
     instructions: list[str] = []
 
     # Decision logic:
-    # 1. If there is free space ahead, keep moving forward.
-    #    Accelerate with F2 up to momentum +4, then hold speed with F1.
-    if front and front > 0:
-        if momentum < 4:
-            instructions.append("F2")
-        else:
-            instructions.append("F1")
+    # Keep the control scheme very simple to avoid crashes: always
+    # maintain zero momentum before moving and move one half‑step at a
+    # time.  Rotate right until a free path opens ahead.
+    if momentum > 0:
+        # If still moving, brake towards zero momentum.  We never turn
+        # or accelerate while momentum is non‑zero.
+        instructions.append("BB")
     else:
-        # 2. Front is blocked.  If the mouse is still moving, brake.
-        if momentum > 0:
-            # Use BB to reduce momentum toward 0 by two units.
-            instructions.append("BB")
+        if front and front > 0:
+            # A clear path ahead: take one half‑step forward without
+            # increasing momentum.  F1 moves a half‑step at constant
+            # speed (m=0 → m=0) and is safer than accelerating.
+            instructions.append("F1")
         else:
-            # 3. Momentum is zero and front is blocked: decide on a turn.
-            # Prefer to turn left if the 45° left sensor is open; otherwise
-            # turn right.  If both are blocked, rotate 90° to the right in two
-            # successive 45° steps to search for an open path.
-            if l45 and l45 > 0:
-                instructions.append("L")
-            elif r45 and r45 > 0:
-                instructions.append("R")
-            else:
-                # Both sides are blocked at 45°; perform two right turns to
-                # rotate 90° and reassess.  Using two separate tokens here
-                # keeps the instruction set valid and ensures momentum is
-                # zero throughout.
-                instructions.extend(["R", "R"])
+            # Path ahead is blocked: rotate 45° to the right.  We rely on
+            # repeated requests to continue rotating until a free path
+            # appears.  In‑place rotation requires zero momentum.
+            instructions.append("R")
 
     # Construct the response.  The 'end' flag remains false because this
     # controller is designed to continue operating until an external
