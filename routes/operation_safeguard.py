@@ -635,7 +635,31 @@ def operation_safeguard():
     challenge_one_data = challenge_one_data
     challenge_one_out = None
     
-    if challenge_one_data and "transformations" in challenge_one_data and "transformed_encrypted_word" in challenge_one_data:
+    # More flexible validation for challenge_one_data
+    transformations = None
+    transformed_word = None
+    
+    if challenge_one_data:
+        # Handle different data formats
+        if isinstance(challenge_one_data, dict):
+            transformations = challenge_one_data.get("transformations", challenge_one_data.get("transformation", ""))
+            transformed_word = challenge_one_data.get("transformed_encrypted_word", 
+                                                   challenge_one_data.get("encrypted_word", 
+                                                                        challenge_one_data.get("text", "")))
+        elif isinstance(challenge_one_data, str):
+            # If it's a string, try to parse it or use it directly
+            transformed_word = challenge_one_data
+            # Try to extract transformations from the string if it contains function names
+            import re
+            func_matches = re.findall(r'(\w+)\(x\)', challenge_one_data)
+            if func_matches:
+                transformations = ', '.join(func_matches)
+        elif isinstance(challenge_one_data, list) and len(challenge_one_data) >= 2:
+            # If it's a list, assume [transformations, encrypted_word]
+            transformations = challenge_one_data[0] if len(challenge_one_data) > 0 else ""
+            transformed_word = challenge_one_data[1] if len(challenge_one_data) > 1 else ""
+    
+    if transformations and transformed_word:
         # Define transformation functions
         def mirror_words(x):
             """Reverse each word in the sentence, keeping word order"""
@@ -751,9 +775,9 @@ def operation_safeguard():
                 i += 1
             return result
         
-        # Parse transformations string
-        transformations_str = challenge_one_data["transformations"]
-        transformed_word = challenge_one_data["transformed_encrypted_word"]
+        # Use the extracted transformations and word
+        transformations_str = transformations
+        transformed_word = transformed_word
         
         # Extract function names from the transformations string
         import re
@@ -780,10 +804,11 @@ def operation_safeguard():
     else:
         # Fallback to AI-powered analysis if traditional methods fail
         if (ENABLE_AI_FALLBACK and challenge_one_data and 
-            ("transformations" in challenge_one_data or "transformed_encrypted_word" in challenge_one_data)):
+            (transformations or transformed_word)):
             try:
-                transformations = challenge_one_data.get("transformations", "")
-                transformed_word = challenge_one_data.get("transformed_encrypted_word", "")
+                # Use the already extracted values
+                transformations = transformations or ""
+                transformed_word = transformed_word or ""
                 
                 prompt = f"""
 You are a cryptanalysis expert. Analyze the following obfuscated text and reverse the transformations to find the original message.
@@ -823,7 +848,47 @@ Respond with ONLY the decrypted text, no explanations.
                 logger.error("Challenge 1 AI fallback exception: %s", e)
                 challenge_one_out = {"error": "AI fallback exception", "details": str(e)}
         else:
-            challenge_one_out = {"error": "Invalid challenge_one data format"}
+            # If we have some data but couldn't process it, try AI analysis
+            if challenge_one_data and ENABLE_AI_FALLBACK:
+                try:
+                    prompt = f"""
+You are a cryptanalysis expert. Analyze the following obfuscated text and reverse any transformations to find the original message.
+
+Input data: {challenge_one_data}
+
+Common transformation patterns to consider:
+1. mirror_words(x) - Reverse each word individually
+2. encode_mirror_alphabet(x) - Replace letters with their alphabet mirror (a↔z, b↔y, etc.)
+3. toggle_case(x) - Switch case of all letters
+4. swap_pairs(x) - Swap characters in pairs within words
+5. encode_index_parity(x) - Rearrange: even indices first, then odd indices
+6. double_consonants(x) - Double every consonant letter
+
+Apply the reverse transformations to recover the original text.
+Respond with ONLY the decrypted text, no explanations.
+"""
+                    
+                    data = {
+                        "model": OPENAI_MODEL,
+                        "messages": [
+                            {"role": "system", "content": "You are a skilled cryptanalyst specializing in text obfuscation reversal."},
+                            {"role": "user", "content": prompt}
+                        ],
+                        "temperature": OPENAI_TEMPERATURE
+                    }
+                    resp = requests.post(OPENAI_URL, headers=HEADERS, data=json.dumps(data))
+                    if resp.status_code == 200:
+                        content = resp.json()["choices"][0]["message"]["content"].strip()
+                        challenge_one_out = content
+                        logger.info("Challenge 1 AI fallback successful: %s", content)
+                    else:
+                        logger.error("Challenge 1 AI fallback failed: %s", resp.text)
+                        challenge_one_out = {"error": "AI fallback failed", "details": resp.text}
+                except Exception as e:
+                    logger.error("Challenge 1 AI fallback exception: %s", e)
+                    challenge_one_out = {"error": "AI fallback exception", "details": str(e)}
+            else:
+                challenge_one_out = {"error": "Invalid challenge_one data format"}
 
     # Challenge 2 (coordinate analysis with enhanced pattern recognition)
     coords = challenge_two_data
@@ -832,9 +897,20 @@ Respond with ONLY the decrypted text, no explanations.
         # First try traditional coordinate analysis
         traditional_result = analyze_coordinates_traditional(coords)
         
-        # If traditional analysis finds a clear result, use it
+        # If traditional analysis finds a clear result, extract just the parameter
         if traditional_result and "error" not in traditional_result:
-            challenge_two_out = traditional_result
+            param = traditional_result.get("parameter")
+            if isinstance(param, (int, float)):
+                challenge_two_out = param
+            elif isinstance(param, str):
+                # Try to convert string to number if it's a digit
+                try:
+                    challenge_two_out = int(param)
+                except ValueError:
+                    # If it's not a number, return the string as is
+                    challenge_two_out = param
+            else:
+                challenge_two_out = param
         else:
             # Fallback to AI analysis
             coords_text = "\n".join(str(c) for c in coords)
@@ -867,14 +943,10 @@ EXAMPLES:
 - Coordinates forming a word might yield parameter: "WORD" or a numerical representation
 
 OUTPUT FORMAT:
-Respond with a JSON object containing:
-- "parameter": The extracted meaningful value (number, letter, or word)
-- "pattern_type": The type of pattern identified
-- "confidence": Your confidence level (0-100)
-- "reasoning": Brief explanation of your analysis
+Respond with ONLY the parameter value (number, letter, or word). No JSON, no explanations, just the extracted value.
 
 Example response:
-{{ "parameter": 5, "pattern_type": "digit", "confidence": 95, "reasoning": "Coordinates form the digit 5 when plotted" }}
+5
 """
 
             try:
@@ -890,7 +962,14 @@ Example response:
                 if resp.status_code == 200:
                     content = resp.json()["choices"][0]["message"]["content"].strip()
                     logger.info("Challenge 2 OpenAI response: %s", content)
-                    challenge_two_out = content
+                    # Try to convert to number if possible
+                    try:
+                        challenge_two_out = int(content)
+                    except ValueError:
+                        try:
+                            challenge_two_out = float(content)
+                        except ValueError:
+                            challenge_two_out = content
                 else:
                     logger.error("OpenAI API error: %s", resp.text)
                     challenge_two_out = {"error": resp.text}
@@ -904,25 +983,84 @@ Example response:
     
     if log_string:
         # Handle different data types for challenge three
+        cipher_type = ""
+        encrypted_payload = ""
+        
         if isinstance(log_string, dict):
             # If it's already a dictionary, extract the relevant fields
-            cipher_type = log_string.get("cipher_type", log_string.get("CIPHER_TYPE", ""))
-            encrypted_payload = log_string.get("encrypted_payload", log_string.get("ENCRYPTED_PAYLOAD", ""))
+            cipher_type = (log_string.get("cipher_type") or 
+                          log_string.get("CIPHER_TYPE") or 
+                          log_string.get("type") or 
+                          log_string.get("cipher", ""))
+            encrypted_payload = (log_string.get("encrypted_payload") or 
+                               log_string.get("ENCRYPTED_PAYLOAD") or 
+                               log_string.get("payload") or 
+                               log_string.get("data") or 
+                               log_string.get("text", ""))
         elif isinstance(log_string, str):
             # Parse log entry to extract cipher type and encrypted payload
             import re
             
-            # Extract cipher type and encrypted payload from log
-            cipher_match = re.search(r'CIPHER_TYPE:\s*(\w+)', log_string)
-            payload_match = re.search(r'ENCRYPTED_PAYLOAD:\s*(\w+)', log_string)
+            # Try multiple patterns to extract cipher type and payload
+            cipher_patterns = [
+                r'CIPHER_TYPE:\s*(\w+)',
+                r'cipher_type:\s*(\w+)',
+                r'Cipher:\s*(\w+)',
+                r'Type:\s*(\w+)',
+                r'cipher\s*=\s*(\w+)',
+                r'type\s*=\s*(\w+)'
+            ]
             
-            cipher_type = cipher_match.group(1) if cipher_match else ""
-            encrypted_payload = payload_match.group(1) if payload_match else ""
+            payload_patterns = [
+                r'ENCRYPTED_PAYLOAD:\s*(\w+)',
+                r'encrypted_payload:\s*(\w+)',
+                r'Payload:\s*(\w+)',
+                r'Data:\s*(\w+)',
+                r'Text:\s*(\w+)',
+                r'payload\s*=\s*(\w+)',
+                r'data\s*=\s*(\w+)',
+                r'text\s*=\s*(\w+)'
+            ]
+            
+            # Try to find cipher type
+            for pattern in cipher_patterns:
+                match = re.search(pattern, log_string, re.IGNORECASE)
+                if match:
+                    cipher_type = match.group(1)
+                    break
+            
+            # Try to find encrypted payload
+            for pattern in payload_patterns:
+                match = re.search(pattern, log_string, re.IGNORECASE)
+                if match:
+                    encrypted_payload = match.group(1)
+                    break
+            
+            # If no patterns matched, try to extract any word that looks like a cipher type
+            if not cipher_type:
+                cipher_candidates = re.findall(r'\b(RAILFENCE|KEYWORD|POLYBIUS|ROTATION_CIPHER|CAESAR|ATBASH|VIGENERE|SUBSTITUTION)\b', log_string, re.IGNORECASE)
+                if cipher_candidates:
+                    cipher_type = cipher_candidates[0].upper()
+            
+            # If no payload found, try to extract any sequence of letters/numbers that could be encrypted data
+            if not encrypted_payload:
+                # Look for sequences of letters and numbers that could be encrypted data
+                payload_candidates = re.findall(r'\b([A-Za-z0-9]{4,})\b', log_string)
+                if payload_candidates:
+                    # Take the longest candidate that looks like encrypted data
+                    encrypted_payload = max(payload_candidates, key=len)
+        elif isinstance(log_string, list):
+            # If it's a list, assume [cipher_type, encrypted_payload]
+            if len(log_string) >= 2:
+                cipher_type = str(log_string[0]) if log_string[0] else ""
+                encrypted_payload = str(log_string[1]) if log_string[1] else ""
+            elif len(log_string) == 1:
+                # If only one item, treat it as encrypted payload and try to guess cipher type
+                encrypted_payload = str(log_string[0])
+                cipher_type = "RAILFENCE"  # Default to most common cipher
         else:
-            # Handle other types (list, etc.)
+            # Handle other types
             challenge_three_out = {"error": f"Unsupported challenge_three data type: {type(log_string).__name__}"}
-            cipher_type = ""
-            encrypted_payload = ""
         
         if cipher_type and encrypted_payload:
             # Implement cipher decryption functions
@@ -1056,7 +1194,51 @@ Example response:
             }
         else:
             if not challenge_three_out:  # Only set error if not already set above
-                challenge_three_out = {"error": "Could not parse cipher type or encrypted payload from log"}
+                # Try AI analysis as fallback if we have some data
+                if log_string and ENABLE_AI_FALLBACK:
+                    try:
+                        prompt = f"""
+You are a cryptanalysis expert. Analyze the following log data and decrypt any encrypted information.
+
+Log data: {log_string}
+
+Common cipher types to try:
+1. RAILFENCE - Rail fence cipher (3 rails)
+2. KEYWORD - Keyword substitution cipher (keyword: SHADOW)
+3. POLYBIUS - Polybius square cipher
+4. ROTATION_CIPHER - Caesar cipher (ROT13)
+5. CAESAR - Caesar cipher with various shifts
+6. ATBASH - Atbash cipher (A=Z, B=Y, etc.)
+
+Try different cipher types and return the decrypted text.
+Respond with ONLY the decrypted text, no explanations.
+"""
+                        
+                        data = {
+                            "model": OPENAI_MODEL,
+                            "messages": [
+                                {"role": "system", "content": "You are a skilled cryptanalyst."},
+                                {"role": "user", "content": prompt}
+                            ],
+                            "temperature": OPENAI_TEMPERATURE
+                        }
+                        resp = requests.post(OPENAI_URL, headers=HEADERS, data=json.dumps(data))
+                        if resp.status_code == 200:
+                            content = resp.json()["choices"][0]["message"]["content"].strip()
+                            challenge_three_out = {
+                                "cipher_type": "AI_ANALYSIS",
+                                "encrypted_payload": str(log_string),
+                                "decrypted_text": content
+                            }
+                            logger.info("Challenge 3 AI fallback successful: %s", content)
+                        else:
+                            logger.error("Challenge 3 AI fallback failed: %s", resp.text)
+                            challenge_three_out = {"error": "AI fallback failed", "details": resp.text}
+                    except Exception as e:
+                        logger.error("Challenge 3 AI fallback exception: %s", e)
+                        challenge_three_out = {"error": "AI fallback exception", "details": str(e)}
+                else:
+                    challenge_three_out = {"error": "Could not parse cipher type or encrypted payload from log"}
     else:
         challenge_three_out = {"error": "No challenge_three log string provided"}
 
