@@ -1,122 +1,69 @@
-from flask import Blueprint, request, jsonify
+from flask import Flask, jsonify, request
+from typing import Any, Dict, List, Tuple
 
-import logging
-
-logger = logging.getLogger(__name__)
-
-mages_gambit = Blueprint('mages_gambit', __name__)
-
-def solve_mages_gambit(intel, reserve, fronts, stamina):
+def compute_time_for_scenario(intel: List[Tuple[int, int]], reserve: int, stamina: int) -> int:
     """
-    Solve the mage's gambit problem to find minimum time to defeat all undead
-    
-    Args:
-        intel: List of [front, mana_cost] pairs representing undead attacks
-        reserve: Maximum mana capacity
-        fronts: Number of fronts (not directly used in calculation)
-        stamina: Maximum number of spells before requiring cooldown
-    
-    Returns:
-        Minimum time in minutes to defeat all undead and be ready for expedition
+    Compute the minimal time (in minutes) for Klein to clear all undead waves in a scenario.
+    Follows the rules specified in the challenge description.
     """
-    if not intel:
-        return 0
-    
     current_mana = reserve
     current_stamina = stamina
     total_time = 0
     last_front = None
-    
-    for i, (front, mana_cost) in enumerate(intel):
-        # Check if we need cooldown before this attack
-        needs_cooldown = False
-        
-        # Need cooldown if not enough mana or no stamina left
-        if current_mana < mana_cost or current_stamina == 0:
-            needs_cooldown = True
-        
-        if needs_cooldown:
-            # Perform cooldown
-            total_time += 10
+    last_action_was_attack = False
+
+    for entry in intel:
+        front, cost = entry
+        # Cool down if resources insufficient
+        if current_mana < cost or current_stamina < 1:
+            total_time += 10  # cooldown time
             current_mana = reserve
             current_stamina = stamina
-        
-        # Perform the attack
-        current_mana -= mana_cost
-        current_stamina -= 1
-        
-        # Add time for the attack (10 minutes unless extending AOE at same front)
-        if last_front == front:
-            # Extending AOE at same location - no extra time needed
-            pass
+            last_action_was_attack = False
+            last_front = None
+
+        # Time to cast depends on whether the front is the same as the last one
+        if last_action_was_attack and last_front == front:
+            total_time += 0  # extension spell
         else:
-            # New target location - takes 10 minutes
-            total_time += 10
-        
+            total_time += 10  # new target
+
+        current_mana -= cost
+        current_stamina -= 1
+        last_action_was_attack = True
         last_front = front
-    
-    # After all attacks, Klein must be in cooldown state to join expedition
-    # If he's not already in cooldown, he needs one more cooldown
-    total_time += 10  # Final cooldown to be ready for expedition
-    
+
+    # Add final cooldown if there were any spells cast
+    if intel:
+        total_time += 10
     return total_time
 
-@mages_gambit.route('/the-mages-gambit', methods=['POST'])
-def the_mages_gambit():
-    """
-    POST endpoint for The Mage's Gambit challenge
-    
-    Expected input: List of scenarios with intel, reserve, fronts, stamina
-    Returns: List of results with minimum time for each scenario
-    """
-    try:
-        # Get JSON data from request
-        data = request.get_json()
+app = Flask(__name__)
 
-        logger.info(data)
-        
-        if not isinstance(data, list):
-            return jsonify({"error": "Input must be a list of scenarios"}), 400
-        
-        results = []
-        
-        for scenario in data:
-            # Validate required fields
-            required_fields = ['intel', 'reserve', 'fronts', 'stamina']
-            if not all(field in scenario for field in required_fields):
-                return jsonify({"error": f"Missing required fields: {required_fields}"}), 400
-            
-            intel = scenario['intel']
-            reserve = scenario['reserve']
-            fronts = scenario['fronts']
-            stamina = scenario['stamina']
-            
-            # Validate data types and ranges
-            if not isinstance(intel, list):
-                return jsonify({"error": "intel must be a list"}), 400
-            
-            for item in intel:
-                if not (isinstance(item, list) and len(item) == 2):
-                    return jsonify({"error": "Each intel item must be [front, mana_cost]"}), 400
-            
-            if not (isinstance(reserve, int) and isinstance(fronts, int) and isinstance(stamina, int)):
-                return jsonify({"error": "reserve, fronts, and stamina must be integers"}), 400
-            
-            if reserve <= 0 or fronts <= 0 or stamina <= 0:
-                return jsonify({"error": "reserve, fronts, and stamina must be positive"}), 400
-            
-            # Validate intel ranges
-            for front, mana_cost in intel:
-                if not (1 <= front <= fronts):
-                    return jsonify({"error": f"Front {front} out of range [1, {fronts}]"}), 400
-                if not (1 <= mana_cost <= reserve):
-                    return jsonify({"error": f"Mana cost {mana_cost} out of range [1, {reserve}]"}), 400
-            
-            # Solve the scenario
-            time_needed = solve_mages_gambit(intel, reserve, fronts, stamina)
-            results.append({"time": time_needed})
-        
-        return jsonify(results)
-    
-    except Exception as e:
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+@app.route("/the-mages-gambit", methods=["POST"])
+def the_mages_gambit() -> Any:
+    """
+    Handle POST requests containing an array of scenarios. Each scenario must include
+    'intel', 'reserve', 'fronts', and 'stamina'. Returns a JSON array of objects with 'time'.
+    """
+    data = request.get_json(force=True)
+    if not isinstance(data, list):
+        return jsonify({"error": "Request body must be a JSON array of scenarios."}), 400
+
+    results: List[Dict[str, int]] = []
+    for idx, scenario in enumerate(data):
+        required = {"intel", "reserve", "fronts", "stamina"}
+        if not required.issubset(scenario.keys()):
+            missing = required.difference(scenario.keys())
+            return jsonify({"error": f"Scenario at index {idx} is missing keys: {', '.join(sorted(missing))}."}), 400
+
+        intel = scenario["intel"]
+        reserve = int(scenario["reserve"])
+        stamina = int(scenario["stamina"])
+
+        # Compute and append the time
+        time_required = compute_time_for_scenario(intel, reserve, stamina)
+        results.append({"time": time_required})
+
+    return jsonify(results), 200
+
