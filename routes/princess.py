@@ -74,7 +74,8 @@ def princess_diaries():
 
     for i, task in enumerate(tasks, start=1):
         # find latest compatible task j < i
-        j = bisect.bisect_right(end_times, task["start"])
+        j = bisect.bisect_right(end_times, task["start"], hi=i-1)
+
 
         # Option 1: skip
         skip = dp[i - 1]
