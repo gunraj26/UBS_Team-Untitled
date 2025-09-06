@@ -70,45 +70,88 @@ def princess_diaries():
 
     # DP: dp[i] = best up to task i
     # store (score, fee, schedule)
+    # dp = [(0, 0, [])]
+
+    # for i, task in enumerate(tasks, start=1):
+    #     # find latest compatible task j < i
+    #     j = bisect.bisect_right(end_times, task["start"], hi=i-1)
+
+
+    #     # Option 1: skip
+    #     skip = dp[i - 1]
+
+    #     # Option 2: take
+    #     prev_score, prev_fee, prev_sched = dp[j]
+    #     new_score = prev_score + task["score"]
+
+    #     if not prev_sched:
+    #         # first task: start -> task -> start
+    #         travel_fee = dist_map[start_station][task["station"]] + dist_map[task["station"]][start_station]
+    #     else:
+    #         last_station = prev_sched[-1]["station"]
+    #         travel_fee = prev_fee - dist_map[last_station][start_station]  # remove return-to-start
+    #         travel_fee += dist_map[last_station][task["station"]]         # add transition
+    #         travel_fee += dist_map[task["station"]][start_station]        # add new return-to-start
+
+    #     take = (new_score, travel_fee, prev_sched + [task])
+
+    #     # Choose better
+    #     if take[0] > skip[0]:
+    #         dp.append(take)
+    #     elif take[0] < skip[0]:
+    #         dp.append(skip)
+    #     else:
+    #         # same score → pick smaller fee
+    #         if take[1] < skip[1]:
+    #             dp.append(take)
+    #         else:
+    #             dp.append(skip)
+
+    # best_score, best_fee, best_schedule = dp[-1]
+    # best_names = [t["name"] for t in sorted(best_schedule, key=lambda x: x["start"])]
+
+
+    # dp[i] = (score, fee_without_return, schedule)
     dp = [(0, 0, [])]
-
+    
     for i, task in enumerate(tasks, start=1):
-        # find latest compatible task j < i
         j = bisect.bisect_right(end_times, task["start"], hi=i-1)
-
-
-        # Option 1: skip
-        skip = dp[i - 1]
-
-        # Option 2: take
+    
+        # skip
+        skip = dp[i-1]
+    
+        # take
         prev_score, prev_fee, prev_sched = dp[j]
         new_score = prev_score + task["score"]
-
+    
         if not prev_sched:
-            # first task: start -> task -> start
-            travel_fee = dist_map[start_station][task["station"]] + dist_map[task["station"]][start_station]
+            # cost = from start to this task
+            new_fee = dist_map[start_station][task["station"]]
         else:
             last_station = prev_sched[-1]["station"]
-            travel_fee = prev_fee - dist_map[last_station][start_station]  # remove return-to-start
-            travel_fee += dist_map[last_station][task["station"]]         # add transition
-            travel_fee += dist_map[task["station"]][start_station]        # add new return-to-start
-
-        take = (new_score, travel_fee, prev_sched + [task])
-
-        # Choose better
+            new_fee = prev_fee + dist_map[last_station][task["station"]]
+    
+        take = (new_score, new_fee, prev_sched + [task])
+    
+        # pick best
         if take[0] > skip[0]:
             dp.append(take)
         elif take[0] < skip[0]:
             dp.append(skip)
         else:
-            # same score → pick smaller fee
+            # tie → pick smaller fee (so far)
             if take[1] < skip[1]:
                 dp.append(take)
             else:
                 dp.append(skip)
+    
+    # Finalize: add return to start for chosen schedule
+    best_score, fee_no_return, best_schedule = dp[-1]
+    if best_schedule:
+        best_fee = fee_no_return + dist_map[best_schedule[-1]["station"]][start_station]
+    else:
+        best_fee = 0
 
-    best_score, best_fee, best_schedule = dp[-1]
-    best_names = [t["name"] for t in sorted(best_schedule, key=lambda x: x["start"])]
 
     result = {
         "max_score": int(best_score),
