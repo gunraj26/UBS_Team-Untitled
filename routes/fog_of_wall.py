@@ -1,10 +1,10 @@
 import json
 import logging
-from collections import defaultdict, deque
+from collections import deque
 from typing import Dict, Tuple, Set, List, Optional
 
 from flask import request
-from routes import app  # matches your sample import
+from routes import app
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -15,81 +15,63 @@ logger.setLevel(logging.INFO)
 # Keyed by (challenger_id, game_id)
 STATE: Dict[Tuple[str, str], Dict] = {}
 
-# Directions and vector deltas
-DIRS = {
-    "N": (0, -1),
-    "S": (0, 1),
-    "W": (-1, 0),
-    "E": (1, 0),
-}
-DIR_KEYS = ["N", "S", "E", "W"]  # provide stable, deterministic tie-breaking
+DIRS = {"N": (0, -1), "S": (0, 1), "W": (-1, 0), "E": (1, 0)}
+DIR_ORDER = ["N", "S", "W", "E"]  # deterministic tiebreakers
 
 
 # ----------------------------
-# Utility helpers
+# Helpers
 # ----------------------------
 def within_bounds(x: int, y: int, L: int) -> bool:
     return 0 <= x < L and 0 <= y < L
 
 
 def add_cell(known: Dict[Tuple[int, int], str], pos: Tuple[int, int], tag: str):
-    """
-    Record knowledge for a cell. Tag is 'W' (wall) or 'E' (empty).
-    Never downgrade 'W' to 'E'. If already known as 'E', keep it.
-    """
+    """Record knowledge for a cell as 'W' or 'E' and never downgrade walls."""
     if tag not in ("W", "E"):
         return
-    if pos in known:
-        if known[pos] == "W":
-            return
-        if known[pos] == "E":
-            return
+    cur = known.get(pos)
+    if cur == "W":
+        return
+    if cur == "E" and tag == "E":
+        return
     known[pos] = tag
 
 
-def parse_initial_test_case(payload: dict):
-    test_case = payload.get("test_case") or {}
-    crows_list = test_case.get("crows", [])
-    crows = {str(c["id"]): (int(c["x"]), int(c["y"])) for c in crows_list}
-    num_walls = int(test_case.get("num_of_walls"))
-    L = int(test_case.get("length_of_grid"))
-    return crows, num_walls, L
-
-
-def initialize_game_state(key: Tuple[str, str], payload: dict):
-    crows, num_walls, L = parse_initial_test_case(payload)
-    # seed known map: mark initial crow cells as empty
-    known: Dict[Tuple[int, int], str] = {}
-    for _, (x, y) in crows.items():
-        add_cell(known, (x, y), "E")
-
-    STATE[key] = {
-        "grid_size": L,
-        "num_walls": num_walls,
-        "known": known,                 # {(x,y): 'W' or 'E'}
-        "crows": crows,                 # {"id": (x,y)}
-        "planned_targets": {},          # {"id": (tx,ty)} frontier goals
-        "last_action": None,            # store last action info if needed
-    }
-
-
-def neighbors4(x: int, y: int) -> List[Tuple[int, int]]:
-    return [(x + dx, y + dy) for dx, dy in DIRS.values()]
-
-
-def chebyshev_dist(a: Tuple[int, int], b: Tuple[int, int]) -> int:
-    return max(abs(a[0] - b[0]), abs(a[1] - b[1]))
-
-
-def manhattan_dist(a: Tuple[int, int], b: Tuple[int, int]) -> int:
-    return abs(a[0] - b[0]) + abs(a[1] - b[1])
-
-
-def scan_needed_here(pos: Tuple[int, int], L: int, known: Dict[Tuple[int, int], str]) -> bool:
+def parse_move_result(mr) -> Optional[Tuple[int, int]]:
     """
-    Decide whether a scan at 'pos' would reveal anything new:
-    returns True if any cell in the 5x5 centered at pos is unknown & in-bounds.
+    Accept move_result in either format:
+    - [x, y]
+    - {"x": x, "y": y, ...}
+    Return (x, y) or None.
     """
+    if isinstance(mr, list) and len(mr) == 2:
+        return int(mr[0]), int(mr[1])
+    if isinstance(mr, dict) and "x" in mr and "y" in mr:
+        return int(mr["x"]), int(mr["y"])
+    return None
+
+
+def update_known_from_scan(center: Tuple[int, int], scan: List[List[str]], L: int,
+                           known: Dict[Tuple[int, int], str]):
+    cx, cy = center
+    if not (isinstance(scan, list) and len(scan) == 5 and all(len(r) == 5 for r in scan)):
+        return
+    for j in range(5):
+        for i in range(5):
+            symbol = scan[j][i]
+            dx, dy = i - 2, j - 2
+            x, y = cx + dx, cy + dy
+            if symbol == "X":
+                continue  # out of bounds
+            if within_bounds(x, y, L):
+                if symbol == "W":
+                    add_cell(known, (x, y), "W")
+                else:  # "_" or "C"
+                    add_cell(known, (x, y), "E")
+
+
+def scan_would_reveal(pos: Tuple[int, int], L: int, known: Dict[Tuple[int, int], str]) -> bool:
     x0, y0 = pos
     for dy in range(-2, 3):
         for dx in range(-2, 3):
@@ -99,188 +81,159 @@ def scan_needed_here(pos: Tuple[int, int], L: int, known: Dict[Tuple[int, int], 
     return False
 
 
-def update_known_from_scan(center: Tuple[int, int], scan: List[List[str]], L: int,
-                           known: Dict[Tuple[int, int], str]):
-    cx, cy = center
-    for j in range(5):
-        for i in range(5):
-            symbol = scan[j][i]
-            dx, dy = i - 2, j - 2
-            x, y = cx + dx, cy + dy
-            if symbol == "X":
-                # out of bounds, ignore
-                continue
-            if within_bounds(x, y, L):
-                if symbol == "W":
-                    add_cell(known, (x, y), "W")
-                elif symbol in ("_", "C"):
-                    add_cell(known, (x, y), "E")
-
-
-def infer_wall_from_bump(prev_pos: Tuple[int, int], direction: str, new_pos: Tuple[int, int],
-                         L: int, known: Dict[Tuple[int, int], str]):
-    """
-    If a move results in the same position, we hit a wall in the intended direction.
-    Mark the blocked neighbor (if in bounds) as 'W'.
-    """
-    if prev_pos == new_pos:
-        dx, dy = DIRS[direction]
-        wx, wy = prev_pos[0] + dx, prev_pos[1] + dy
-        if within_bounds(wx, wy, L):
-            add_cell(known, (wx, wy), "W")
-
-
-def current_walls(known: Dict[Tuple[int, int], str]) -> Set[Tuple[int, int]]:
-    return {pos for pos, tag in known.items() if tag == "W"}
-
-
-def current_walls_as_strings(known: Dict[Tuple[int, int], str]) -> List[str]:
-    return [f"{x}-{y}" for (x, y), tag in known.items() if tag == "W"]
-
-
 def frontier_centers(L: int, known: Dict[Tuple[int, int], str]) -> List[Tuple[int, int]]:
-    """
-    A frontier center is a cell where performing a scan would reveal at least one unknown,
-    and the center cell itself is not known to be a wall.
-    We consider all in-bounds cells; we prefer ones that are known empty, but allow unknown centers too.
-    """
-    candidates = []
+    """Cells where a scan would still reveal unknown tiles; exclude known walls."""
+    out = []
     for y in range(L):
         for x in range(L):
             if known.get((x, y)) == "W":
                 continue
-            # If any unknown within 2 cells, it's a frontier
-            needs = False
+            # is any neighbor within scan radius unknown?
+            needed = False
             for dy in range(-2, 3):
                 for dx in range(-2, 3):
                     xx, yy = x + dx, y + dy
                     if within_bounds(xx, yy, L) and (xx, yy) not in known:
-                        needs = True
+                        needed = True
                         break
-                if needs:
+                if needed:
                     break
-            if needs:
-                candidates.append((x, y))
-    return candidates
+            if needed:
+                out.append((x, y))
+    return out
 
 
-def choose_crow_and_action(state: Dict) -> Dict:
+def bfs_next_step(start: Tuple[int, int], goal: Tuple[int, int], L: int,
+                  known: Dict[Tuple[int, int], str]) -> Optional[str]:
     """
-    Decide the next action:
-    - If any crow stands where a scan would reveal new info, scan with that crow.
-    - Else, move the crow that is closest to any frontier center toward its assigned/nearest frontier.
-    - If there are no frontier centers (everything known or all walls found), fallback: submit if possible, else no-op scan.
+    Return the first move (N/S/E/W) on a shortest path from start to goal,
+    avoiding cells known as walls. Unknown cells are allowed (we're exploring).
     """
+    if start == goal:
+        return None
+
+    q = deque([start])
+    parent: Dict[Tuple[int, int], Tuple[int, int]] = {start: start}
+    while q:
+        x, y = q.popleft()
+        for d in DIR_ORDER:
+            dx, dy = DIRS[d]
+            nx, ny = x + dx, y + dy
+            np = (nx, ny)
+            if not within_bounds(nx, ny, L):
+                continue
+            if known.get(np) == "W":
+                continue
+            if np in parent:
+                continue
+            parent[np] = (x, y)
+            if np == goal:
+                # reconstruct first step
+                cur = np
+                while parent[cur] != start:
+                    cur = parent[cur]
+                fx, fy = cur
+                if fx == start[0] and fy == start[1]:
+                    # shouldn't happen; safety
+                    continue
+                # deduce direction from start -> cur
+                dx2, dy2 = fx - start[0], fy - start[1]
+                for D, (vx, vy) in DIRS.items():
+                    if (vx, vy) == (dx2, dy2):
+                        return D
+            q.append(np)
+
+    # no path found (boxed by walls we already know); try greedy nudge
+    sx, sy = start
+    tx, ty = goal
+    greedy: List[str] = []
+    if tx > sx: greedy.append("E")
+    if tx < sx: greedy.append("W")
+    if ty > sy: greedy.append("S")
+    if ty < sy: greedy.append("N")
+    # add remaining as fallbacks
+    for D in DIR_ORDER:
+        if D not in greedy: greedy.append(D)
+    for D in greedy:
+        dx, dy = DIRS[D]
+        nx, ny = sx + dx, sy + dy
+        if within_bounds(nx, ny, L) and known.get((nx, ny)) != "W":
+            return D
+    return None
+
+
+def decide_action(state: Dict) -> Dict:
     L = state["grid_size"]
     known = state["known"]
     crows = state["crows"]
     planned = state["planned_targets"]
 
     # If we already know all walls, submit.
-    if len(current_walls(known)) >= state["num_walls"]:
+    if len([1 for v in known.values() if v == "W"]) >= state["num_walls"]:
         return {"action_type": "submit"}
 
-    # 1) Scan if standing over a useful scan spot
+    # 1) If any crow stands where a scan would reveal new info, scan right away.
     for cid, pos in crows.items():
-        if scan_needed_here(pos, L, known):
+        if scan_would_reveal(pos, L, known):
             return {"action_type": "scan", "crow_id": cid}
 
-    # 2) Build global frontier list
-    frontiers = frontier_centers(L, known)
-    if not frontiers:
-        # Nothing left to reveal — either we already know all walls (handled above)
-        # or everything is known empty — submit whatever walls we have.
+    # 2) Build/refresh frontier set
+    fronts = set(frontier_centers(L, known))
+    if not fronts:
+        # nothing left to reveal; submit what we have
         return {"action_type": "submit"}
 
-    # 3) Assign or refresh planned targets if the targets no longer make sense
-    #    (e.g., center became wall somehow).
-    invalid = []
-    for cid, tgt in planned.items():
-        if tgt not in frontiers or known.get(tgt) == "W":
-            invalid.append(cid)
-    for cid in invalid:
-        planned.pop(cid, None)
+    # prune invalid targets
+    for cid in list(planned.keys()):
+        tgt = planned[cid]
+        if tgt not in fronts or known.get(tgt) == "W":
+            planned.pop(cid, None)
 
-    # 4) If some crows lack a target, greedily assign nearest unique frontier
-    unassigned_crows = [cid for cid in crows.keys() if cid not in planned]
-    # Simple greedy: for each unassigned crow, pick nearest frontier not yet taken
-    taken: Set[Tuple[int, int]] = set(planned.values())
-    for cid in unassigned_crows:
-        pos = crows[cid]
-        best = None
-        best_d = 10**9
-        for f in frontiers:
+    # assign targets if missing (greedy nearest)
+    taken = set(planned.values())
+    for cid, pos in crows.items():
+        if cid in planned:
+            continue
+        best, bestd = None, 10**9
+        for f in fronts:
             if f in taken:
                 continue
-            d = manhattan_dist(pos, f)
-            if d < best_d:
-                best_d = d
-                best = f
+            d = abs(pos[0] - f[0]) + abs(pos[1] - f[1])
+            if d < bestd:
+                best, bestd = f, d
         if best is not None:
             planned[cid] = best
             taken.add(best)
 
-    # 5) Pick the crow that can get to its target fastest
-    best_crow = None
-    best_d = 10**9
-    best_target = None
+    # pick crow with shortest distance to its target
+    choice = None
+    bestd = 10**9
     for cid, pos in crows.items():
         tgt = planned.get(cid)
         if not tgt:
             continue
-        d = manhattan_dist(pos, tgt)
-        if d < best_d:
-            best_d = d
-            best_crow = cid
-            best_target = tgt
+        d = abs(pos[0] - tgt[0]) + abs(pos[1] - tgt[1])
+        if d < bestd:
+            bestd = d
+            choice = cid
 
-    # If nobody has a target (very unlikely), scan with any crow as a fallback
-    if best_crow is None:
+    if not choice:
+        # fallback: scan with any
         any_cid = next(iter(crows.keys()))
         return {"action_type": "scan", "crow_id": any_cid}
 
-    # 6) Move best_crow one step toward best_target, preferring moves that reduce Manhattan distance
-    cx, cy = crows[best_crow]
-    tx, ty = best_target
-    dx = tx - cx
-    dy = ty - cy
-
-    candidates = []
-    if dx != 0:
-        candidates.append("E" if dx > 0 else "W")
-    if dy != 0:
-        candidates.append("S" if dy > 0 else "N")
-
-    # Stable tie-breaking / also try orthogonal alternatives if primary choices are blocked as known walls.
-    tried: List[str] = []
-    for d in candidates:
-        tried.append(d)
-    # Add remaining directions as backup (may still bump to learn walls)
-    for d in DIR_KEYS:
-        if d not in tried:
-            tried.append(d)
-
-    for direction in tried:
-        vx, vy = DIRS[direction]
-        nx, ny = cx + vx, cy + vy
-        if not within_bounds(nx, ny, L):
-            continue
-        if state["known"].get((nx, ny)) == "W":
-            continue  # avoid known wall
-        # attempt this direction
-        return {"action_type": "move", "crow_id": best_crow, "direction": direction}
-
-    # If all directions are either OOB or known walls, attempt a scan as a last resort
-    return {"action_type": "scan", "crow_id": best_crow}
+    # choose path step via BFS
+    start = crows[choice]
+    goal = planned[choice]
+    step = bfs_next_step(start, goal, L, known)
+    if step is None:
+        # at target: scanning will be handled on next loop top, but do it now
+        return {"action_type": "scan", "crow_id": choice}
+    return {"action_type": "move", "crow_id": choice, "direction": step}
 
 
-def safe_get(d: dict, *keys, default=None):
-    cur = d
-    for k in keys:
-        if cur is None or not isinstance(cur, dict):
-            return default
-        cur = cur.get(k)
-    return cur if cur is not None else default
+def walls_as_strings(known: Dict[Tuple[int, int], str]) -> List[str]:
+    return [f"{x}-{y}" for (x, y), t in known.items() if t == "W"]
 
 
 # ----------------------------
@@ -288,14 +241,6 @@ def safe_get(d: dict, *keys, default=None):
 # ----------------------------
 @app.route('/fog-of-wall', methods=['POST'])
 def fog_of_wall():
-    """
-    Core endpoint implementing the Fog of Wall strategy.
-
-    Request: JSON as specified (initial test case, or follow-up with previous_action).
-    Response: JSON with one of: scan / move / submit.
-
-    State is kept per (challenger_id, game_id).
-    """
     payload = request.get_json(force=True, silent=True) or {}
     logger.info("Fog-of-Wall request: %s", payload)
 
@@ -303,100 +248,119 @@ def fog_of_wall():
     game_id = str(payload.get("game_id", ""))
     if not challenger_id or not game_id:
         return json.dumps({"error": "challenger_id and game_id are required"}), 400
-
     key = (challenger_id, game_id)
 
-    # Initialize per-game state on first message of a test case
+    # Initialize
     if key not in STATE and payload.get("test_case"):
-        initialize_game_state(key, payload)
+        tc = payload["test_case"]
+        L = int(tc["length_of_grid"])
+        num_walls = int(tc["num_of_walls"])
+        crows_list = tc.get("crows", [])
+        crows = {str(c["id"]): (int(c["x"]), int(c["y"])) for c in crows_list}
+        known: Dict[Tuple[int, int], str] = {}
+        for pos in crows.values():
+            add_cell(known, pos, "E")
+        STATE[key] = {
+            "grid_size": L,
+            "num_walls": num_walls,
+            "crows": crows,
+            "known": known,
+            "planned_targets": {},
+            "last_failed_edge": set(),  # {(x,y,dir)} edges we already bumped into
+        }
 
-    # If somehow still missing (bad sequence), fail gracefully
     if key not in STATE:
         return json.dumps({"error": "Unknown game. Send initial test_case first."}), 400
 
     state = STATE[key]
+    L = state["grid_size"]
     known = state["known"]
     crows = state["crows"]
-    L = state["grid_size"]
 
-    # --------------------------------
-    # Ingest the result of our previous action (if any)
-    # --------------------------------
+    # ----------------------------
+    # Ingest result of previous action
+    # ----------------------------
     prev = payload.get("previous_action")
     if prev:
-        action = prev.get("your_action")
+        act = prev.get("your_action")
         cid = str(prev.get("crow_id")) if prev.get("crow_id") is not None else None
 
-        if action == "move":
-            # Update the crow's position and infer wall if we bumped
-            move_result = prev.get("move_result")
+        if act == "move" and cid in crows:
+            old = crows[cid]
+            new_xy = parse_move_result(prev.get("move_result"))
             direction = prev.get("direction")
-            if cid in crows and isinstance(move_result, list) and len(move_result) == 2 and direction in DIRS:
-                old_pos = crows[cid]
-                new_pos = (int(move_result[0]), int(move_result[1]))
-                # Learn from bump
-                infer_wall_from_bump(old_pos, direction, new_pos, L, known)
-                # Update crow position and mark as empty
-                crows[cid] = new_pos
-                add_cell(known, new_pos, "E")
+            if new_xy is not None:
+                # bump detection
+                if direction in DIRS and new_xy == old:
+                    dx, dy = DIRS[direction]
+                    wx, wy = old[0] + dx, old[1] + dy
+                    if within_bounds(wx, wy, L):
+                        add_cell(known, (wx, wy), "W")
+                    # mark this edge as failed to avoid repeating
+                    state["last_failed_edge"].add((old[0], old[1], direction))
+                else:
+                    # successful move
+                    crows[cid] = new_xy
+                    add_cell(known, new_xy, "E")
 
-        elif action == "scan":
-            scan_result = prev.get("scan_result")
-            if cid in crows and isinstance(scan_result, list) and len(scan_result) == 5:
-                center = crows[cid]
-                update_known_from_scan(center, scan_result, L, known)
+        elif act == "scan" and cid in crows:
+            scan = prev.get("scan_result")
+            update_known_from_scan(crows[cid], scan, L, known)
 
-    # --------------------------------
+    # ----------------------------
     # Decide next action
-    # --------------------------------
-    decision = choose_crow_and_action(state)
+    # ----------------------------
+    decision = decide_action(state)
 
-    # Submit if all walls found or no more frontiers
+    # Avoid repeating the exact same failed edge (loop breaker)
+    if decision.get("action_type") == "move":
+        cid = decision["crow_id"]
+        direction = decision["direction"]
+        x, y = state["crows"][cid]
+        if (x, y, direction) in state["last_failed_edge"]:
+            # try another direction that still goes somewhere legal
+            for D in DIR_ORDER:
+                if D == direction:
+                    continue
+                dx, dy = DIRS[D]
+                nx, ny = x + dx, y + dy
+                if within_bounds(nx, ny, L) and known.get((nx, ny)) != "W":
+                    decision["direction"] = D
+                    break
+
+    # ----------------------------
+    # Emit response or submit
+    # ----------------------------
     if decision["action_type"] == "submit":
-        walls_list = current_walls_as_strings(known)
-        response = {
+        submission = walls_as_strings(known)
+        resp = {
             "challenger_id": challenger_id,
             "game_id": game_id,
             "action_type": "submit",
-            "submission": walls_list,
+            "submission": submission,
         }
-        logger.info("Submitting %d walls (known target=%d)", len(walls_list), state["num_walls"])
-        # Clean up state for the next test case (optional but tidy)
+        logger.info("Submitting %d/%d walls", len(submission), state["num_walls"])
+        # tidy cleanup so the next test_case starts fresh
         STATE.pop(key, None)
-        return json.dumps(response)
+        return json.dumps(resp)
 
-    # Scan action
     if decision["action_type"] == "scan":
-        crow_id = decision["crow_id"]
-        response = {
+        resp = {
             "challenger_id": challenger_id,
             "game_id": game_id,
-            "crow_id": crow_id,
+            "crow_id": decision["crow_id"],
             "action_type": "scan",
         }
-        logger.info("Action: scan with crow %s", crow_id)
-        return json.dumps(response)
+        logger.info("Action: scan with crow %s", decision["crow_id"])
+        return json.dumps(resp)
 
-    # Move action
-    if decision["action_type"] == "move":
-        crow_id = decision["crow_id"]
-        direction = decision["direction"]
-        response = {
-            "challenger_id": challenger_id,
-            "game_id": game_id,
-            "crow_id": crow_id,
-            "action_type": "move",
-            "direction": direction,
-        }
-        logger.info("Action: move crow %s %s", crow_id, direction)
-        return json.dumps(response)
-
-    # Fallback (shouldn't happen)
-    logger.warning("No valid decision; defaulting to scan with first crow.")
-    any_cid = next(iter(crows.keys()))
-    return json.dumps({
+    # move
+    resp = {
         "challenger_id": challenger_id,
         "game_id": game_id,
-        "crow_id": any_cid,
-        "action_type": "scan",
-    })
+        "crow_id": decision["crow_id"],
+        "action_type": "move",
+        "direction": decision["direction"],
+    }
+    logger.info("Action: move crow %s %s", decision["crow_id"], decision["direction"])
+    return json.dumps(resp)
