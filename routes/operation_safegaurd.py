@@ -5,14 +5,9 @@ import math
 from collections import Counter
 import numpy as np
 
-# -----------------------------------------------------------------------------
-# App bootstrap
-# -----------------------------------------------------------------------------
-try:
-    # If your project already provides an app in routes.py, reuse it.
-    from routes import app  # type: ignore
-except Exception:
-    app = Flask(__name__)
+
+from routes import app  # type: ignore
+
 
 # -----------------------------------------------------------------------------
 # Challenge 1: Transformations + inverses
@@ -330,10 +325,3 @@ def operation_safeguard():
 
     except Exception as e:
         return jsonify({"error": f"An error occurred: {e}"}), 500
-
-# -----------------------------------------------------------------------------
-# Entrypoint
-# -----------------------------------------------------------------------------
-if __name__ == "__main__":
-    # Run the app directly (override if your infra uses gunicorn/uvicorn).
-    app.run(host="0.0.0.0", port=5000, debug=True)
