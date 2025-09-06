@@ -31,8 +31,8 @@ class FogOfWallGame:
         """Initialize a new game with test case data"""
         # Handle None or missing test_case
         if not test_case:
-            logger.warning(f"Empty test_case provided for game {game_id}")
-            test_case = {}
+            logger.error(f"Empty or None test_case provided for game {game_id}")
+            raise ValueError("test_case cannot be None or empty")
             
         # Validate test_case structure
         if not isinstance(test_case, dict):
@@ -550,62 +550,48 @@ def fog_of_wall():
     Handles initial setup, move results, scan results, and submissions
     """
     try:
-        payload = request.get_json(force=True)
+        # Get raw data first for debugging
+        raw_data = request.get_data()
+        logger.info(f"Raw request data: {raw_data}")
+        
+        try:
+            payload = request.get_json(force=True)
+        except Exception as e:
+            logger.error(f"Failed to parse JSON: {e}")
+            return jsonify({'error': 'Invalid JSON in request body'}), 400
+            
+        if not payload:
+            logger.error("Empty payload received")
+            return jsonify({'error': 'Empty request body'}), 400
+            
         challenger_id = payload.get('challenger_id')
         game_id = payload.get('game_id')
         
         logger.info(f"Received request: challenger_id={challenger_id}, game_id={game_id}, has_test_case={'test_case' in payload}, has_previous_action={'previous_action' in payload}")
         
+        # Log full payload for debugging
+        logger.info(f"Full payload: {payload}")
+        
         # Log test_case structure for debugging
         if 'test_case' in payload:
             test_case = payload['test_case']
-            logger.info(f"Test case data: {test_case}")
+            logger.info(f"Test case data: {test_case} (type: {type(test_case)})")
             if isinstance(test_case, dict) and 'crows' in test_case:
                 logger.info(f"Crows data: {test_case['crows']}")
+            elif test_case is None:
+                logger.warning("Test case is None - this should not happen for initial requests")
         
         if not challenger_id or not game_id:
             return jsonify({'error': 'Missing challenger_id or game_id'}), 400
             
-        # Check if this is an initial request
-        if 'test_case' in payload:
-            # Check if game already exists
-            if game_id in game_manager.games:
-                logger.warning(f"Game {game_id} already exists, returning current state")
-                # Return the existing game state instead of overwriting
-                game_state = game_manager.games[game_id]
-                crows = game_state['crows']
-                
-                if not crows:
-                    logger.error(f"Game {game_id} exists but has no crows. This indicates a corrupted game state.")
-                    # Try to restart the game with the new test case
-                    logger.info(f"Attempting to restart game {game_id} with new test case")
-                    try:
-                        game_manager.start_new_game(game_id, payload['test_case'])
-                        game_state = game_manager.games[game_id]
-                        crows = game_state['crows']
-                        
-                        if not crows:
-                            return jsonify({'error': 'No crows available even after restart'}), 400
-                    except Exception as e:
-                        logger.error(f"Failed to restart game: {str(e)}")
-                        return jsonify({'error': f'Failed to restart game: {str(e)}'}), 400
-                    
-                # Return the first available crow for scanning
-                first_crow_id = list(crows.keys())[0]
-                return jsonify({
-                    'challenger_id': challenger_id,
-                    'game_id': game_id,
-                    'crow_id': first_crow_id,
-                    'action_type': 'scan'
-                })
-            
-            # Initialize new game only if it doesn't exist
+        # Check if this is an initial request with valid test_case data
+        if 'test_case' in payload and payload['test_case'] is not None:
             test_case = payload['test_case']
             
             # Add validation for test_case
-            if not test_case or not isinstance(test_case, dict):
-                logger.error(f"Invalid test_case: {test_case}")
-                return jsonify({'error': 'Invalid test_case data'}), 400
+            if not isinstance(test_case, dict):
+                logger.error(f"Invalid test_case type: {type(test_case)}, value: {test_case}")
+                return jsonify({'error': 'Invalid test_case data - must be a dictionary'}), 400
                 
             # Validate crows data before starting game
             crows_data = test_case.get('crows', [])
@@ -613,11 +599,22 @@ def fog_of_wall():
                 logger.error(f"Invalid crows data: {crows_data}")
                 return jsonify({'error': 'No valid crows data found in test_case'}), 400
                 
-            try:
-                game_manager.start_new_game(game_id, test_case)
-            except Exception as e:
-                logger.error(f"Failed to start new game: {str(e)}")
-                return jsonify({'error': f'Failed to start new game: {str(e)}'}), 400
+            # Check if game already exists
+            if game_id in game_manager.games:
+                logger.warning(f"Game {game_id} already exists, restarting with new test case")
+                # Restart the game with the new test case
+                try:
+                    game_manager.start_new_game(game_id, test_case)
+                except Exception as e:
+                    logger.error(f"Failed to restart game: {str(e)}")
+                    return jsonify({'error': f'Failed to restart game: {str(e)}'}), 400
+            else:
+                # Initialize new game
+                try:
+                    game_manager.start_new_game(game_id, test_case)
+                except Exception as e:
+                    logger.error(f"Failed to start new game: {str(e)}")
+                    return jsonify({'error': f'Failed to start new game: {str(e)}'}), 400
             
             # Get initial action
             game_state = game_manager.games[game_id]
@@ -627,8 +624,6 @@ def fog_of_wall():
             if not crows:
                 return jsonify({'error': 'No crows available'}), 400
                 
-            explorer = MazeExplorer(game_state['grid_size'])
-            
             # Start with scanning at initial positions
             first_crow_id = list(crows.keys())[0]
             return jsonify({
@@ -641,7 +636,9 @@ def fog_of_wall():
         # Handle previous action result
         previous_action = payload.get('previous_action')
         if not previous_action:
-            return jsonify({'error': 'No previous action provided'}), 400
+            # If we don't have a test_case and no previous_action, this is an invalid request
+            logger.error(f"Invalid request: no test_case and no previous_action for game {game_id}")
+            return jsonify({'error': 'Invalid request: must provide either test_case or previous_action'}), 400
             
         action_type = previous_action.get('your_action')
         crow_id = previous_action.get('crow_id')
@@ -649,6 +646,11 @@ def fog_of_wall():
         # Validate that we have the required fields
         if not action_type or not crow_id:
             return jsonify({'error': 'Missing action_type or crow_id in previous_action'}), 400
+            
+        # Check if game exists
+        if game_id not in game_manager.games:
+            logger.error(f"Game {game_id} not found when processing previous action")
+            return jsonify({'error': 'Game not found'}), 404
         
         if action_type == 'move':
             # Process move result
