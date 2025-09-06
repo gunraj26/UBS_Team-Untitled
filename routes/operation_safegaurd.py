@@ -5,10 +5,6 @@ from collections import Counter
 
 from routes import app
 
-import logging
-
-logger = logging.getLogger(__name__)
-
 # Challenge 1: Transformation Functions
 def mirror_words(text):
     """Reverse each word in the sentence, keeping word order"""
@@ -199,12 +195,17 @@ def solve_challenge_three(log_entry):
     cipher_type = fields.get('CIPHER_TYPE', '')
     encrypted_payload = fields.get('ENCRYPTED_PAYLOAD', '')
     
-    if cipher_type == 'ROTATION_CIPHER':
+    print(f"Debug - Cipher type: {cipher_type}")
+    print(f"Debug - Encrypted payload: {encrypted_payload}")
+    
+    if cipher_type == 'ROTATION_CIPHER' or cipher_type == 'ROT_CIPHER':
         # Try ROT13 first, then other rotations
         result = rot_cipher(encrypted_payload, 13)
         return result
     elif cipher_type == 'RAILFENCE':
-        return railfence_decrypt(encrypted_payload, 3)
+        result = railfence_decrypt(encrypted_payload, 3)
+        print(f"Debug - Rail fence result: {result}")
+        return result
     elif cipher_type == 'KEYWORD':
         return keyword_decrypt(encrypted_payload, "SHADOW")
     elif cipher_type == 'POLYBIUS':
@@ -332,7 +333,6 @@ def solve_challenge_four(param1, param2, param3):
 def operation_safeguard():
     try:
         data = request.json
-        logger.info(data)
         
         if not data:
             return jsonify({"error": "No JSON data provided"}), 400
@@ -345,17 +345,27 @@ def operation_safeguard():
             transformations = challenge_one.get('transformations', [])
             transformed_word = challenge_one.get('transformed_encrypted_word', '')
             
+            print(f"Challenge 1 - Transformations: {transformations}")
+            print(f"Challenge 1 - Input: {transformed_word}")
+            
             results['challenge_one'] = solve_challenge_one(transformations, transformed_word)
+            print(f"Challenge 1 - Result: {results['challenge_one']}")
         
         # Challenge 2: Network Traffic Pattern Analysis
         if 'challenge_two' in data:
             coordinates = data['challenge_two']
+            print(f"Challenge 2 - Total coordinates: {len(coordinates)}")
+            
             results['challenge_two'] = solve_challenge_two(coordinates)
+            print(f"Challenge 2 - Result: {results['challenge_two']}")
         
         # Challenge 3: Operational Intelligence Extraction
         if 'challenge_three' in data:
             log_entry = data['challenge_three']
+            print(f"Challenge 3 - Log entry: {log_entry}")
+            
             results['challenge_three'] = solve_challenge_three(log_entry)
+            print(f"Challenge 3 - Result: {results['challenge_three']}")
         
         # Challenge 4: Final Communication Decryption
         if all(key in results for key in ['challenge_one', 'challenge_two', 'challenge_three']):
@@ -364,13 +374,14 @@ def operation_safeguard():
                 results['challenge_two'],
                 results['challenge_three']
             )
+            print(f"Challenge 4 - Result: {results['challenge_four']}")
         
         return jsonify(results)
     
     except Exception as e:
+        print(f"Error: {str(e)}")
         return jsonify({"error": f"An error occurred: {str(e)}"}), 500
 
 @app.route('/health', methods=['GET'])
 def health_check():
     return jsonify({"status": "healthy", "message": "Operation Safeguard API is running"})
-
