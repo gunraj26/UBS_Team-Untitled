@@ -9,7 +9,8 @@ logger = logging.getLogger(__name__)
 
 def dijkstra(n, graph, src):
     """Shortest path distances from src using Dijkstra."""
-    dist = [10**12] * n
+    INF = 10**12
+    dist = [INF] * n
     dist[src] = 0
     pq = [(0, src)]
     while pq:
@@ -31,9 +32,15 @@ def princess_diaries():
     subway_raw = data.get("subway", [])
     start_station = data.get("starting_station", 0)
 
-    # Build graph
+    if not tasks_raw:
+        return jsonify({"max_score": 0, "min_fee": 0, "schedule": []})
+
+    # Build graph (ensure it covers all stations in subway + tasks + start)
     stations = set([start_station] + [t["station"] for t in tasks_raw])
+    for e in subway_raw:
+        stations.update(e["connection"])
     max_station = max(stations) + 1
+
     graph = [[] for _ in range(max_station)]
     for e in subway_raw:
         u, v = e["connection"]
@@ -58,47 +65,48 @@ def princess_diaries():
     end_times = [t["end"] for t in tasks]
 
     # Precompute shortest paths from relevant stations
-    unique_stations = list(stations)
-    dist_map = {}
-    for s in unique_stations:
-        dist_map[s] = dijkstra(max_station, graph, s)
+    relevant_stations = set([start_station] + [t["station"] for t in tasks])
+    dist_map = {s: dijkstra(max_station, graph, s) for s in relevant_stations}
 
-    # DP
-    dp = [(0, 0, [])]  # (score, -fee, schedule list)
+    # DP: dp[i] = best up to task i
+    # store (score, fee, schedule)
+    dp = [(0, 0, [])]
 
     for i, task in enumerate(tasks, start=1):
-        # find latest compatible task with binary search
+        # find latest compatible task j < i
         j = bisect.bisect_right(end_times, task["start"])
 
         # Option 1: skip
         skip = dp[i - 1]
 
         # Option 2: take
-        take_score = task["score"] + dp[j][0]
-        schedule = dp[j][2] + [task]
+        prev_score, prev_fee, prev_sched = dp[j]
+        new_score = prev_score + task["score"]
 
-        # compute fee
-        fee = dist_map[start_station][schedule[0]["station"]]
-        for k in range(len(schedule) - 1):
-            fee += dist_map[schedule[k]["station"]][schedule[k + 1]["station"]]
-        fee += dist_map[schedule[-1]["station"]][start_station]
+        if not prev_sched:
+            # first task: start -> task -> start
+            travel_fee = dist_map[start_station][task["station"]] + dist_map[task["station"]][start_station]
+        else:
+            last_station = prev_sched[-1]["station"]
+            travel_fee = prev_fee - dist_map[last_station][start_station]  # remove return-to-start
+            travel_fee += dist_map[last_station][task["station"]]         # add transition
+            travel_fee += dist_map[task["station"]][start_station]        # add new return-to-start
 
-        take = (take_score, -fee, schedule)
+        take = (new_score, travel_fee, prev_sched + [task])
 
-        # choose better
-        if take_score > skip[0]:
+        # Choose better
+        if take[0] > skip[0]:
             dp.append(take)
-        elif take_score < skip[0]:
+        elif take[0] < skip[0]:
             dp.append(skip)
         else:
-            # same score, prefer lower fee
-            if take[1] > skip[1]:
+            # same score → pick smaller fee
+            if take[1] < skip[1]:
                 dp.append(take)
             else:
                 dp.append(skip)
 
-    best_score, neg_fee, best_schedule = dp[-1]
-    best_fee = -neg_fee
+    best_score, best_fee, best_schedule = dp[-1]
     best_names = [t["name"] for t in sorted(best_schedule, key=lambda x: x["start"])]
 
     result = {
