@@ -189,12 +189,29 @@ class MazeExplorer:
         
     def get_next_action(self, game_state, crows):
         """
-        Determine the best next action for any crow using fast exploration
+        Determine the best next action for any crow using optimized exploration
         Returns (crow_id, action_type, direction_or_none)
         """
-        # Fast strategy: prioritize scanning, then simple movement
+        # Check if we should submit early (found enough walls or running out of moves)
+        walls_found = len(game_state['discovered_walls'])
+        total_walls = game_state['num_walls']
+        moves_used = game_state['move_count']
+        max_moves = game_state['max_moves']
         
-        # First, check if any crow should scan (simple check)
+        # Submit early if we found all walls or are running out of moves
+        # Be more conservative about early submission to find more walls
+        if (walls_found >= total_walls or 
+            moves_used >= max_moves * 0.95):  # Submit at 95% of max moves
+            logger.info(f"Submitting: walls={walls_found}/{total_walls}, moves={moves_used}/{max_moves}")
+            return None, 'submit', None
+        
+        # Strategy: Prioritize scanning unexplored positions, then move to new areas
+        
+        # First, find any crow that can scan an unexplored position
+        # Prioritize crows in areas with more potential for wall discovery
+        best_scan_crow = None
+        best_scan_score = -1
+        
         for crow_id, crow_pos in crows.items():
             if not crow_pos or not isinstance(crow_pos, dict):
                 continue
@@ -203,45 +220,21 @@ class MazeExplorer:
             # Skip if already scanned this position
             if (x, y) in game_state['scan_results']:
                 continue
-                
-            # Scan if we haven't scanned this position yet
-            return crow_id, 'scan', None
-                
-        # If all crows have scanned their positions, find a simple move
-        for crow_id, crow_pos in crows.items():
-            if not crow_pos or not isinstance(crow_pos, dict):
-                continue
-                
-            x = crow_pos.get('x')
-            y = crow_pos.get('y')
             
-            if x is None or y is None:
-                continue
-            
-            # Try each direction in order
-            for direction in ['N', 'S', 'E', 'W']:
-                if self._is_valid_move(crow_pos, direction):
-                    new_x, new_y = self._get_new_position(x, y, direction)
-                    
-                    # Skip if we've already explored this position
-                    if (new_x, new_y) in game_state['explored_cells']:
-                        continue
-                        
-                    return crow_id, 'move', direction
+            # Calculate scan value for this position
+            scan_score = self._calculate_scan_value(x, y, game_state)
+            if scan_score > best_scan_score:
+                best_scan_score = scan_score
+                best_scan_crow = crow_id
+                
+        if best_scan_crow:
+            logger.info(f"Scanning with crow {best_scan_crow} at position {crows[best_scan_crow]}")
+            return best_scan_crow, 'scan', None
         
-        # Last resort: if no valid moves, submit what we have
-        logger.warning("No valid moves found, should submit current results")
-        return None, 'submit', None
-        
-    def _find_best_coordinated_move(self, game_state, crows):
-        """Find the best move using coordinated multi-crow strategy"""
-        # Assign exploration areas to crows if not already assigned
-        if not self.crow_assignments:
-            self._assign_exploration_areas(game_state, crows)
-            
-        best_score = -1
+        # If all crows have scanned their positions, find the best move
         best_crow = None
         best_direction = None
+        best_score = -1
         
         for crow_id, crow_pos in crows.items():
             if not crow_pos or not isinstance(crow_pos, dict):
@@ -253,12 +246,9 @@ class MazeExplorer:
             if x is None or y is None:
                 continue
             
-            # Get assigned area for this crow
-            assigned_area = self.crow_assignments.get(crow_id, None)
-            
-            # Try each direction
+            # Try each direction and score the move
             for direction in ['N', 'S', 'E', 'W']:
-                if not self._is_valid_move(crow_pos, direction):
+                if not self._is_valid_move(crow_pos, direction, game_state):
                     continue
                     
                 new_x, new_y = self._get_new_position(x, y, direction)
@@ -266,53 +256,46 @@ class MazeExplorer:
                 # Skip if we've already explored this position
                 if (new_x, new_y) in game_state['explored_cells']:
                     continue
-                    
-                # Calculate exploration value with coordination
-                score = self._calculate_coordinated_value(new_x, new_y, game_state, crow_id, assigned_area)
+                
+                # Calculate score for this move
+                score = self._calculate_move_score(new_x, new_y, game_state)
                 
                 if score > best_score:
                     best_score = score
                     best_crow = crow_id
                     best_direction = direction
-                    
-        return best_crow, best_direction
         
-    def _assign_exploration_areas(self, game_state, crows):
-        """Assign different areas of the grid to different crows for efficient exploration"""
-        crow_ids = list(crows.keys())
-        grid_size = game_state['grid_size']
+        if best_crow and best_direction:
+            logger.info(f"Moving crow {best_crow} {best_direction} from {crows[best_crow]}")
+            return best_crow, 'move', best_direction
         
-        if len(crow_ids) == 1:
-            # Single crow explores everything
-            self.crow_assignments[crow_ids[0]] = (0, 0, grid_size, grid_size)
-        elif len(crow_ids) == 2:
-            # Two crows: split vertically
-            mid_x = grid_size // 2
-            self.crow_assignments[crow_ids[0]] = (0, 0, mid_x, grid_size)
-            self.crow_assignments[crow_ids[1]] = (mid_x, 0, grid_size, grid_size)
-        elif len(crow_ids) == 3:
-            # Three crows: split into quadrants with overlap
-            mid_x = grid_size // 2
-            mid_y = grid_size // 2
-            self.crow_assignments[crow_ids[0]] = (0, 0, mid_x + 2, mid_y + 2)
-            self.crow_assignments[crow_ids[1]] = (mid_x - 2, 0, grid_size, mid_y + 2)
-            self.crow_assignments[crow_ids[2]] = (0, mid_y - 2, grid_size, grid_size)
-        else:
-            # More than 3 crows: assign based on current positions
-            for i, crow_id in enumerate(crow_ids):
-                crow_pos = crows[crow_id]
-                if not crow_pos or not isinstance(crow_pos, dict):
-                    continue
-                x = crow_pos.get('x')
-                y = crow_pos.get('y')
-                if x is None or y is None:
-                    continue
-                # Assign a small area around each crow's starting position
-                self.crow_assignments[crow_id] = (max(0, x-5), max(0, y-5), 
-                                                min(grid_size, x+6), min(grid_size, y+6))
+        # If no good moves found, try any valid move (even to explored areas)
+        for crow_id, crow_pos in crows.items():
+            if not crow_pos or not isinstance(crow_pos, dict):
+                continue
                 
-    def _calculate_coordinated_value(self, x, y, game_state, crow_id, assigned_area):
-        """Calculate exploration value considering crow's assigned area"""
+            x = crow_pos.get('x')
+            y = crow_pos.get('y')
+            
+            if x is None or y is None:
+                continue
+            
+            # Try each direction for any valid move
+            for direction in ['N', 'S', 'E', 'W']:
+                if not self._is_valid_move(crow_pos, direction, game_state):
+                    continue
+                    
+                new_x, new_y = self._get_new_position(x, y, direction)
+                
+                # Even if explored, try to move there if it's not a wall
+                return crow_id, 'move', direction
+        
+        # If absolutely no moves possible, submit what we have
+        logger.warning("No valid moves found, submitting current results")
+        return None, 'submit', None
+    
+    def _calculate_move_score(self, x, y, game_state):
+        """Calculate how valuable it would be to move to position (x, y)"""
         if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
             return 0
             
@@ -324,152 +307,46 @@ class MazeExplorer:
         if (x, y) in game_state['discovered_walls']:
             return 0
             
-        base_value = 10
+        # Base score for unexplored position
+        score = 20  # Higher base score to encourage exploration
         
-        # Bonus for being in assigned area
-        if assigned_area:
-            min_x, min_y, max_x, max_y = assigned_area
-            if min_x <= x < max_x and min_y <= y < max_y:
-                base_value += 5
-                
-        # Calculate distance from explored areas
+        # Bonus for being near unexplored areas (potential for scanning)
+        unexplored_nearby = 0
+        for dx in range(-2, 3):
+            for dy in range(-2, 3):
+                check_x, check_y = x + dx, y + dy
+                if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
+                    if (check_x, check_y) not in game_state['explored_cells']:
+                        unexplored_nearby += 1
+        
+        # Higher score for positions with more unexplored nearby cells
+        score += min(unexplored_nearby, 15)  # Increased cap
+        
+        # Bonus for being far from explored areas (frontier exploration)
         min_distance = float('inf')
         for explored_x, explored_y in game_state['explored_cells']:
             distance = abs(x - explored_x) + abs(y - explored_y)
             min_distance = min(min_distance, distance)
             
-        # Higher value for positions further from explored areas
-        if min_distance == float('inf'):
-            return base_value + 10  # Unexplored area
+        if min_distance != float('inf'):
+            # Prefer positions that are far from explored areas
+            score += min(min_distance, 10)  # Increased bonus
         else:
-            return base_value + max(0, 10 - min_distance)
+            # Unexplored area - very high priority
+            score += 20
         
-    def _find_best_move(self, game_state, crows):
-        """Find the best move for any crow using exploration strategy"""
-        best_score = -1
-        best_crow = None
-        best_direction = None
+        return score
         
-        for crow_id, crow_pos in crows.items():
-            if not crow_pos or not isinstance(crow_pos, dict):
-                continue
+        
                 
-            x = crow_pos.get('x')
-            y = crow_pos.get('y')
+        
+        
+        
+        
+        
             
-            if x is None or y is None:
-                continue
-            
-            # Try each direction
-            for direction in ['N', 'S', 'E', 'W']:
-                if not self._is_valid_move(crow_pos, direction):
-                    continue
-                    
-                new_x, new_y = self._get_new_position(x, y, direction)
-                
-                # Skip if we've already explored this position
-                if (new_x, new_y) in game_state['explored_cells']:
-                    continue
-                    
-                # Calculate exploration value
-                score = self._calculate_exploration_value(new_x, new_y, game_state)
-                
-                if score > best_score:
-                    best_score = score
-                    best_crow = crow_id
-                    best_direction = direction
-                    
-        return best_crow, best_direction
-        
-    def _find_optimal_scanning_positions(self, game_state, crows):
-        """Find optimal positions for scanning to maximize wall discovery"""
-        optimal_positions = []
-        max_positions = 50  # Limit to prevent timeout
-        
-        # Find unexplored areas that could benefit from scanning
-        # Limit search to avoid timeout on large grids
-        search_limit = min(self.grid_size, 20)  # Don't search entire large grids
-        for x in range(0, search_limit, 2):  # Sample every 2nd cell
-            for y in range(0, search_limit, 2):
-                if (x, y) in game_state['explored_cells']:
-                    continue
-                    
-                # Calculate potential wall discovery value
-                potential_walls = self._estimate_potential_walls(x, y, game_state)
-                if potential_walls > 0:
-                    # Find closest crow to this position
-                    closest_crow = self._find_closest_crow(x, y, crows)
-                    if closest_crow:
-                        distance = self._calculate_distance(
-                            crows[closest_crow]['x'], crows[closest_crow]['y'], x, y
-                        )
-                        optimal_positions.append((x, y, closest_crow, potential_walls, distance))
-                        
-                        # Early exit if we have enough positions
-                        if len(optimal_positions) >= max_positions:
-                            break
-            if len(optimal_positions) >= max_positions:
-                break
-                        
-        # Sort by potential walls (descending) and distance (ascending)
-        optimal_positions.sort(key=lambda x: (-x[3], x[4]))
-        return optimal_positions[:max_positions]  # Return only top positions
-        
-    def _estimate_potential_walls(self, x, y, game_state):
-        """Estimate how many walls might be discovered by scanning at position (x, y)"""
-        potential_count = 0
-        
-        # Check 5x5 area around the position
-        for dx in range(-2, 3):
-            for dy in range(-2, 3):
-                check_x, check_y = x + dx, y + dy
-                if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
-                    # If this cell is unexplored, it could potentially be a wall
-                    if (check_x, check_y) not in game_state['explored_cells']:
-                        potential_count += 1
-                        
-        return potential_count
-        
-    def _find_closest_crow(self, target_x, target_y, crows):
-        """Find the crow closest to the target position"""
-        closest_crow = None
-        min_distance = float('inf')
-        
-        for crow_id, crow_pos in crows.items():
-            distance = self._calculate_distance(
-                crow_pos['x'], crow_pos['y'], target_x, target_y
-            )
-            if distance < min_distance:
-                min_distance = distance
-                closest_crow = crow_id
-                
-        return closest_crow
-        
-    def _calculate_distance(self, x1, y1, x2, y2):
-        """Calculate Manhattan distance between two positions"""
-        return abs(x1 - x2) + abs(y1 - y2)
-        
-    def _get_scanning_priority(self, game_state, crows):
-        """Determine which crow should scan next based on strategic value"""
-        scan_priorities = []
-        
-        for crow_id, crow_pos in crows.items():
-            x, y = crow_pos['x'], crow_pos['y']
-            
-            # Skip if already scanned this position
-            if (x, y) in game_state['scan_results']:
-                continue
-                
-            # Calculate strategic value of scanning here
-            strategic_value = self._calculate_scanning_value(x, y, game_state)
-            scan_priorities.append((crow_id, strategic_value))
-            
-        # Sort by strategic value (descending)
-        scan_priorities.sort(key=lambda x: x[1], reverse=True)
-        return scan_priorities
-        
-    def _calculate_scanning_value(self, x, y, game_state):
-        """Calculate the strategic value of scanning at position (x, y)"""
+    def _calculate_scan_value(self, x, y, game_state):
+        """Calculate how valuable it would be to scan at position (x, y)"""
         if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
             return 0
             
@@ -487,53 +364,23 @@ class MazeExplorer:
                 if (0 <= check_x < self.grid_size and 0 <= check_y < self.grid_size):
                     if (check_x, check_y) not in game_state['explored_cells']:
                         unexplored_count += 1
-                        
-        # Base value on unexplored cells in scan area
-        value += unexplored_count * 2
         
-        # Bonus for being in a strategic position (center of unexplored areas)
-        if unexplored_count > 10:  # High density of unexplored cells
-            value += 5
-            
-        # Check if this position is near known walls (might discover more walls nearby)
+        # Base value on unexplored cells in scan area
+        value += unexplored_count * 3  # Increased multiplier
+        
+        # Bonus for being near known walls (might discover more walls nearby)
         wall_proximity = 0
         for wall_x, wall_y in game_state['discovered_walls']:
-            distance = self._calculate_distance(x, y, wall_x, wall_y)
-            if distance <= 3:  # Within 3 cells of a known wall
+            distance = abs(x - wall_x) + abs(y - wall_y)
+            if distance <= 4:  # Within 4 cells of a known wall
                 wall_proximity += 1
                 
         if wall_proximity > 0:
-            value += wall_proximity * 3
+            value += wall_proximity * 5  # Increased bonus
             
         return value
         
-    def _calculate_exploration_value(self, x, y, game_state):
-        """Calculate how valuable it would be to explore position (x, y)"""
-        if not (0 <= x < self.grid_size and 0 <= y < self.grid_size):
-            return 0
-            
-        # Check if position is already explored
-        if (x, y) in game_state['explored_cells']:
-            return 0
-            
-        # Check if position is a known wall
-        if (x, y) in game_state['discovered_walls']:
-            return 0
-            
-        # Calculate distance from explored areas (prefer unexplored frontiers)
-        min_distance = float('inf')
-        for explored_x, explored_y in game_state['explored_cells']:
-            distance = abs(x - explored_x) + abs(y - explored_y)
-            min_distance = min(min_distance, distance)
-            
-        # Higher value for positions further from explored areas
-        # But not too far (to avoid getting lost)
-        if min_distance == float('inf'):
-            return 10  # Unexplored area
-        else:
-            return max(0, 10 - min_distance)
-            
-    def _is_valid_move(self, crow_pos, direction):
+    def _is_valid_move(self, crow_pos, direction, game_state):
         """Check if a move in the given direction is valid"""
         if not crow_pos or not isinstance(crow_pos, dict):
             return False
@@ -551,6 +398,10 @@ class MazeExplorer:
         
         # Check bounds
         if not (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size):
+            return False
+        
+        # Check if the destination is a known wall
+        if (new_x, new_y) in game_state['discovered_walls']:
             return False
             
         return True
