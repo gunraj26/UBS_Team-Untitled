@@ -53,7 +53,7 @@ def minimum_boats_required(intervals):
     return max_overlap
 
 
-@app.route('/sailing-club', methods=['POST'])
+@app.route('/', methods=['POST'])
 def evaluate2():
     """
     Handle POST requests containing test cases for the sailing club.
