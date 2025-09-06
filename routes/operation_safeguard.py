@@ -776,7 +776,11 @@ def operation_safeguard():
             return result
         
         # Use the extracted transformations and word
-        transformations_str = transformations
+        # Ensure transformations is converted to string for regex processing
+        if isinstance(transformations, list):
+            transformations_str = ', '.join(str(item) for item in transformations)
+        else:
+            transformations_str = str(transformations) if transformations else ""
         transformed_word = transformed_word
         
         # Extract function names from the transformations string
@@ -807,13 +811,17 @@ def operation_safeguard():
             (transformations or transformed_word)):
             try:
                 # Use the already extracted values
-                transformations = transformations or ""
+                # Ensure transformations is converted to string for display
+                if isinstance(transformations, list):
+                    transformations_str = ', '.join(str(item) for item in transformations)
+                else:
+                    transformations_str = str(transformations) if transformations else ""
                 transformed_word = transformed_word or ""
                 
                 prompt = f"""
 You are a cryptanalysis expert. Analyze the following obfuscated text and reverse the transformations to find the original message.
 
-Transformations applied: {transformations}
+Transformations applied: {transformations_str}
 Transformed text: {transformed_word}
 
 Common transformation patterns to consider:

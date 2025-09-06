@@ -30,17 +30,32 @@ class FogOfWallGame:
         
     def start_new_game(self, game_id, test_case):
         """Initialize a new game with test case data"""
+        # Handle None or missing test_case
+        if not test_case:
+            test_case = {}
+            
+        # Handle None or missing crows
+        crows_data = test_case.get('crows', [])
+        if not crows_data:
+            crows_data = []
+            
+        # Safely process crows, filtering out None values
+        crows = {}
+        for crow in crows_data:
+            if crow and isinstance(crow, dict) and 'id' in crow and 'x' in crow and 'y' in crow:
+                crows[crow['id']] = {'x': crow['x'], 'y': crow['y']}
+        
         self.games[game_id] = {
-            'crows': {crow['id']: {'x': crow['x'], 'y': crow['y']} for crow in test_case['crows']},
-            'grid_size': test_case['length_of_grid'],
-            'num_walls': test_case['num_of_walls'],
+            'crows': crows,
+            'grid_size': test_case.get('length_of_grid', 10),  # Default to 10 if missing
+            'num_walls': test_case.get('num_of_walls', 0),  # Default to 0 if missing
             'discovered_walls': set(),
             'explored_cells': set(),
             'scan_results': {},  # Store scan results for each position
             'move_count': 0,
             'game_complete': False
         }
-        logger.info(f"Started new game {game_id} with {len(test_case['crows'])} crows")
+        logger.info(f"Started new game {game_id} with {len(crows)} crows")
         
     def get_crow_position(self, game_id, crow_id):
         """Get current position of a crow"""
@@ -160,7 +175,14 @@ class MazeExplorer:
         best_direction = None
         
         for crow_id, crow_pos in crows.items():
-            x, y = crow_pos['x'], crow_pos['y']
+            if not crow_pos or not isinstance(crow_pos, dict):
+                continue
+                
+            x = crow_pos.get('x')
+            y = crow_pos.get('y')
+            
+            if x is None or y is None:
+                continue
             
             # Get assigned area for this crow
             assigned_area = self.crow_assignments.get(crow_id, None)
@@ -210,7 +232,12 @@ class MazeExplorer:
             # More than 3 crows: assign based on current positions
             for i, crow_id in enumerate(crow_ids):
                 crow_pos = crows[crow_id]
-                x, y = crow_pos['x'], crow_pos['y']
+                if not crow_pos or not isinstance(crow_pos, dict):
+                    continue
+                x = crow_pos.get('x')
+                y = crow_pos.get('y')
+                if x is None or y is None:
+                    continue
                 # Assign a small area around each crow's starting position
                 self.crow_assignments[crow_id] = (max(0, x-5), max(0, y-5), 
                                                 min(grid_size, x+6), min(grid_size, y+6))
@@ -255,7 +282,14 @@ class MazeExplorer:
         best_direction = None
         
         for crow_id, crow_pos in crows.items():
-            x, y = crow_pos['x'], crow_pos['y']
+            if not crow_pos or not isinstance(crow_pos, dict):
+                continue
+                
+            x = crow_pos.get('x')
+            y = crow_pos.get('y')
+            
+            if x is None or y is None:
+                continue
             
             # Try each direction
             for direction in ['N', 'S', 'E', 'W']:
@@ -423,8 +457,19 @@ class MazeExplorer:
             
     def _is_valid_move(self, crow_pos, direction):
         """Check if a move in the given direction is valid"""
-        x, y = crow_pos['x'], crow_pos['y']
+        if not crow_pos or not isinstance(crow_pos, dict):
+            return False
+            
+        x = crow_pos.get('x')
+        y = crow_pos.get('y')
+        
+        if x is None or y is None:
+            return False
+            
         new_x, new_y = self._get_new_position(x, y, direction)
+        
+        if new_x is None or new_y is None:
+            return False
         
         # Check bounds
         if not (0 <= new_x < self.grid_size and 0 <= new_y < self.grid_size):
@@ -434,6 +479,9 @@ class MazeExplorer:
         
     def _get_new_position(self, x, y, direction):
         """Get new position after moving in given direction"""
+        if x is None or y is None:
+            return None, None
+            
         if direction == 'N':
             return x, y - 1
         elif direction == 'S':
@@ -465,11 +513,20 @@ def fog_of_wall():
         if 'test_case' in payload:
             # Initialize new game
             test_case = payload['test_case']
-            game_manager.start_new_game(game_id, test_case)
+            try:
+                game_manager.start_new_game(game_id, test_case)
+            except Exception as e:
+                logger.error(f"Failed to start new game: {str(e)}")
+                return jsonify({'error': f'Failed to start new game: {str(e)}'}), 400
             
             # Get initial action
             game_state = game_manager.games[game_id]
             crows = game_state['crows']
+            
+            # Check if we have any crows
+            if not crows:
+                return jsonify({'error': 'No crows available'}), 400
+                
             explorer = MazeExplorer(game_state['grid_size'])
             
             # Start with scanning at initial positions
@@ -498,14 +555,26 @@ def fog_of_wall():
             move_result = previous_action.get('move_result')
             if move_result and isinstance(move_result, list) and len(move_result) == 2:
                 new_x, new_y = move_result
-                game_manager.update_crow_position(game_id, crow_id, new_x, new_y)
+                # Validate coordinates are numbers
+                if isinstance(new_x, (int, float)) and isinstance(new_y, (int, float)):
+                    game_manager.update_crow_position(game_id, crow_id, int(new_x), int(new_y))
+                else:
+                    logger.warning(f"Invalid move result coordinates: {move_result}")
+            else:
+                logger.warning(f"Invalid move result format: {move_result}")
                 
         elif action_type == 'scan':
             # Process scan result
             scan_result = previous_action.get('scan_result')
             crow_pos = game_manager.get_crow_position(game_id, crow_id)
             if crow_pos and scan_result and isinstance(scan_result, list):
-                game_manager.add_scan_result(game_id, crow_id, crow_pos['x'], crow_pos['y'], scan_result)
+                # Validate scan result is 5x5 grid
+                if len(scan_result) == 5 and all(isinstance(row, list) and len(row) == 5 for row in scan_result):
+                    game_manager.add_scan_result(game_id, crow_id, crow_pos['x'], crow_pos['y'], scan_result)
+                else:
+                    logger.warning(f"Invalid scan result format: {scan_result}")
+            else:
+                logger.warning(f"Invalid scan result or crow position: scan_result={scan_result}, crow_pos={crow_pos}")
                 
         # Check if game is complete
         if game_manager.is_game_complete(game_id):
@@ -523,10 +592,30 @@ def fog_of_wall():
             return jsonify({'error': 'Game not found'}), 404
             
         game_state = game_manager.games[game_id]
+        if not game_state:
+            return jsonify({'error': 'Game state is None'}), 500
+            
         crows = game_state.get('crows', {})
-        explorer = MazeExplorer(game_state['grid_size'])
-        
-        next_crow, next_action, direction = explorer.get_next_action(game_state, crows)
+        if not crows:
+            return jsonify({'error': 'No crows available'}), 400
+            
+        grid_size = game_state.get('grid_size')
+        if not grid_size:
+            return jsonify({'error': 'Grid size not found'}), 500
+            
+        try:
+            explorer = MazeExplorer(grid_size)
+            next_crow, next_action, direction = explorer.get_next_action(game_state, crows)
+        except Exception as e:
+            logger.error(f"Error in get_next_action: {str(e)}")
+            # Fallback: submit what we have
+            discovered_walls = game_manager.get_discovered_walls(game_id)
+            return jsonify({
+                'challenger_id': challenger_id,
+                'game_id': game_id,
+                'action_type': 'submit',
+                'submission': discovered_walls
+            })
         
         if not next_crow or not next_action:
             # No valid actions, submit what we have
@@ -546,6 +635,16 @@ def fog_of_wall():
                 'action_type': 'scan'
             })
         elif next_action == 'move':
+            # Validate direction
+            if direction not in ['N', 'S', 'E', 'W']:
+                logger.warning(f"Invalid direction: {direction}, submitting instead")
+                discovered_walls = game_manager.get_discovered_walls(game_id)
+                return jsonify({
+                    'challenger_id': challenger_id,
+                    'game_id': game_id,
+                    'action_type': 'submit',
+                    'submission': discovered_walls
+                })
             return jsonify({
                 'challenger_id': challenger_id,
                 'game_id': game_id,
