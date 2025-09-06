@@ -31,30 +31,79 @@ class FogOfWallGame:
         """Initialize a new game with test case data"""
         # Handle None or missing test_case
         if not test_case:
+            logger.warning(f"Empty test_case provided for game {game_id}")
             test_case = {}
+            
+        # Validate test_case structure
+        if not isinstance(test_case, dict):
+            logger.error(f"Invalid test_case type for game {game_id}: {type(test_case)}")
+            raise ValueError(f"test_case must be a dictionary, got {type(test_case)}")
             
         # Handle None or missing crows
         crows_data = test_case.get('crows', [])
         if not crows_data:
+            logger.warning(f"No crows data in test_case for game {game_id}")
             crows_data = []
+        elif not isinstance(crows_data, list):
+            logger.error(f"Invalid crows data type for game {game_id}: {type(crows_data)}")
+            raise ValueError(f"crows must be a list, got {type(crows_data)}")
             
         # Safely process crows, filtering out None values
         crows = {}
-        for crow in crows_data:
-            if crow and isinstance(crow, dict) and 'id' in crow and 'x' in crow and 'y' in crow:
-                crows[crow['id']] = {'x': crow['x'], 'y': crow['y']}
+        for i, crow in enumerate(crows_data):
+            if crow is None:
+                logger.warning(f"Skipping None crow at index {i} in game {game_id}")
+                continue
+            if not isinstance(crow, dict):
+                logger.warning(f"Skipping invalid crow at index {i} in game {game_id}: {type(crow)}")
+                continue
+            if 'id' not in crow or 'x' not in crow or 'y' not in crow:
+                logger.warning(f"Skipping crow at index {i} in game {game_id} missing required fields: {crow}")
+                continue
+            try:
+                x, y = int(crow['x']), int(crow['y'])
+                crows[crow['id']] = {'x': x, 'y': y}
+            except (ValueError, TypeError) as e:
+                logger.warning(f"Skipping crow at index {i} in game {game_id} with invalid coordinates: {e}")
+                continue
+        
+        if not crows:
+            logger.error(f"No valid crows found in test_case for game {game_id}")
+            raise ValueError("No valid crows found in test_case")
+        
+        # Validate grid size
+        grid_size = test_case.get('length_of_grid', 10)
+        try:
+            grid_size = int(grid_size)
+            if grid_size <= 0:
+                logger.warning(f"Invalid grid_size {grid_size} for game {game_id}, using default 10")
+                grid_size = 10
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid grid_size type for game {game_id}, using default 10")
+            grid_size = 10
+            
+        # Validate number of walls
+        num_walls = test_case.get('num_of_walls', 0)
+        try:
+            num_walls = int(num_walls)
+            if num_walls < 0:
+                logger.warning(f"Invalid num_walls {num_walls} for game {game_id}, using 0")
+                num_walls = 0
+        except (ValueError, TypeError):
+            logger.warning(f"Invalid num_walls type for game {game_id}, using 0")
+            num_walls = 0
         
         self.games[game_id] = {
             'crows': crows,
-            'grid_size': test_case.get('length_of_grid', 10),  # Default to 10 if missing
-            'num_walls': test_case.get('num_of_walls', 0),  # Default to 0 if missing
+            'grid_size': grid_size,
+            'num_walls': num_walls,
             'discovered_walls': set(),
             'explored_cells': set(),
             'scan_results': {},  # Store scan results for each position
             'move_count': 0,
             'game_complete': False
         }
-        logger.info(f"Started new game {game_id} with {len(crows)} crows")
+        logger.info(f"Started new game {game_id} with {len(crows)} crows, grid_size={grid_size}, num_walls={num_walls}")
         
     def get_crow_position(self, game_id, crow_id):
         """Get current position of a crow"""
@@ -507,6 +556,13 @@ def fog_of_wall():
         
         logger.info(f"Received request: challenger_id={challenger_id}, game_id={game_id}, has_test_case={'test_case' in payload}, has_previous_action={'previous_action' in payload}")
         
+        # Log test_case structure for debugging
+        if 'test_case' in payload:
+            test_case = payload['test_case']
+            logger.info(f"Test case data: {test_case}")
+            if isinstance(test_case, dict) and 'crows' in test_case:
+                logger.info(f"Crows data: {test_case['crows']}")
+        
         if not challenger_id or not game_id:
             return jsonify({'error': 'Missing challenger_id or game_id'}), 400
             
@@ -545,6 +601,18 @@ def fog_of_wall():
             
             # Initialize new game only if it doesn't exist
             test_case = payload['test_case']
+            
+            # Add validation for test_case
+            if not test_case or not isinstance(test_case, dict):
+                logger.error(f"Invalid test_case: {test_case}")
+                return jsonify({'error': 'Invalid test_case data'}), 400
+                
+            # Validate crows data before starting game
+            crows_data = test_case.get('crows', [])
+            if not crows_data or not isinstance(crows_data, list):
+                logger.error(f"Invalid crows data: {crows_data}")
+                return jsonify({'error': 'No valid crows data found in test_case'}), 400
+                
             try:
                 game_manager.start_new_game(game_id, test_case)
             except Exception as e:
