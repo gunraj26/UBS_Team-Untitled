@@ -10,6 +10,7 @@ import routes.princess
 import routes.fog_of_wall
 import routes.trading_formula
 import routes.mstCalc
+import routes.duolingo
 
 # --- import blueprints ---
 # from .trading_formula import trading_formula_bp
