@@ -22,3 +22,6 @@ app.register_blueprint(trading_formula_bp)        # exposes POST /trading-formul
 # app.register_blueprint(square_bp)
 # app.register_blueprint(investigate_bp)
 
+
+from routes.ink_archive import bp as ink_archive_bp
+app.register_blueprint(ink_archive_bp)
