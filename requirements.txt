@@ -12,6 +12,8 @@ openai
 numpy
 requests
 scipy
+python-dotenv
+
 
 
 
