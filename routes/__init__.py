@@ -12,7 +12,7 @@ import routes.trading_formula
 import routes.mstCalc
 import routes.duolingo
 import routes.trading_formula
-
+import routes.trading_bot
 
 # --- import blueprints ---
 # from .trading_formula import trading_formula_bp
