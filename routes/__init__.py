@@ -5,7 +5,7 @@ import routes.square
 import routes.trading_formula
 import routes.trading_bot
 import routes.mages_gambit
-
+import blankety_blanks
 
 # --- import blueprints ---
 # from .trading_formula import trading_formula_bp
