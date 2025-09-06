@@ -256,10 +256,3 @@ class ExampleController(MicromouseController):
             return True
         
         return False
-
-if __name__ == '__main__':
-    # Set the example controller
-    set_controller(ExampleController())
-    
-    # Run the Flask app
-    app.run(debug=True, host='0.0.0.0', port=5000)
