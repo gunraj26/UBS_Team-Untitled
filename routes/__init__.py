@@ -7,6 +7,7 @@ import routes.trading_bot
 import routes.mages_gambit
 import routes.blankety
 import routes.duolingo
+import routes.fog_of_wall
 
 # --- import blueprints ---
 # from .trading_formula import trading_formula_bp
