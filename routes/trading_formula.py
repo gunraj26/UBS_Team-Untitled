@@ -75,7 +75,7 @@ import hashlib
 from flask import request
 
 from routes import app
-from routes.trading_formula import preprocess_formula, evaluate_formula
+from formula_engine import preprocess_formula, evaluate_formula
 
 logger = logging.getLogger(__name__)
 
