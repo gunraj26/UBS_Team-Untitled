@@ -24,6 +24,6 @@ app.register_blueprint(ink_archive_bp)
 from routes.slpu import slpu
 app.register_blueprint(slpu)
 
-from routes.mages_gambit import mages_gambit
+# from routes.mages_gambit import mages_gambit
 
-app.register_blueprint(mages_gambit)
+# app.register_blueprint(mages_gambit)
