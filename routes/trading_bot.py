@@ -15,6 +15,10 @@ bp = Blueprint("trading_bot", __name__)
 
 from routes import app
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @bp.route("/trading-bot", methods=["POST"])
 def trading_bot() -> tuple:
@@ -40,6 +44,7 @@ def trading_bot() -> tuple:
     # Attempt to parse the request body as JSON. If parsing fails or the
     # payload is not a list, return a 400 error.
     data = request.get_json(silent=True)
+    logger.info(data)
     if not isinstance(data, list):
         return jsonify({"error": "Invalid input format; expected a JSON array."}), 400
 
