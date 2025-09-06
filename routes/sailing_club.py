@@ -54,7 +54,7 @@ def minimum_boats_required(intervals):
 
 
 @app.route('/sailing-club', methods=['POST'])
-def evaluate():
+def evaluate2():
     """
     Handle POST requests containing test cases for the sailing club.
     Each test case should have an 'id' and an 'input' list of [start, end] bookings.
