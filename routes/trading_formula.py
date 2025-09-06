@@ -1,5 +1,6 @@
 from __future__ import annotations
 from flask import Blueprint, request, jsonify
+import logging
 
 """
 Flask application exposing a single endpoint for evaluating LaTeX
@@ -10,6 +11,13 @@ conversion and evaluation logic.
 from formula_engine import evaluate_formula
 
 from routes import app
+
+# Configure a basic logger.  When this module is imported the
+# configuration will ensure log messages are emitted to standard
+# output.  If the environment already sets up logging, this will
+# have no additional effect.
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 @app.route('/trading-formula', methods=['POST'])  # type: ignore
 def trading_formula():
@@ -28,6 +36,17 @@ def trading_formula():
             raise ValueError
     except Exception:
         return jsonify({'error': 'Invalid JSON input'}), 400  # type: ignore
+
+    # Log the incoming payload for debugging purposes.  This log
+    # includes the raw list received from the client.  Logging the
+    # payload can help diagnose issues with malformed inputs or
+    # unexpected structures.  In a production environment you may
+    # wish to redact sensitive fields.
+    try:
+        logger.info("Received payload: %s", data)
+    except Exception:
+        # Fall back to printing if logging fails for any reason
+        print(f"Received payload: {data}")
 
     results: list[dict[str, float | None]] = []
     for case in data:
@@ -48,4 +67,3 @@ def trading_formula():
             results.append({'result': None})
 
     return jsonify(results)  # type: ignore
-
